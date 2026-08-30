@@ -1,0 +1,4622 @@
+﻿# Copyright (c) 2025 清绝 (QingJue) <blog.qjyg.de>
+# This script is licensed under the Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License.
+# To view a copy of this license, visit http://creativecommons.org/licenses/by-nc-sa/4.0/
+#
+# 郑重声明：
+# 本脚本为免费开源项目，仅供个人学习和非商业用途使用。
+# 未经作者授权，严禁将本脚本或其修改版本用于任何形式的商业盈利行为（包括但不限于倒卖、付费部署服务等）。
+# 任何违反本协议的行为都将受到法律追究。
+
+$ScriptVersion = "v5.30"
+
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$OutputEncoding = [System.Text.Encoding]::UTF8
+try { Add-Type -AssemblyName System.Net.Http } catch {}
+
+$SourceManifestUrl = "https://gugu.qjyg.de/source-manifest.json"
+$FirstPartyScriptKey = "pc_st"
+$script:SourceManifest = $null
+$script:SourceProvider = $null
+$script:ScriptSelfUpdateUrl = $null
+$HelpDocsUrl = "https://blog.qjyg.de"
+$ScriptBaseDir = Split-Path -Path $PSCommandPath -Parent
+$ST_Dir = Join-Path $ScriptBaseDir "SillyTavern"
+$Luker_Dir = Join-Path $ScriptBaseDir "Luker"
+$Repo_Branch = "release"
+$Backup_Root_Dir = Join-Path $ScriptBaseDir "_SillyTavern_Backups"
+$Backup_Limit = 10
+$UpdateFlagFile = Join-Path ([System.IO.Path]::GetTempPath()) ".st_assistant_update_flag"
+
+$ConfigDir = Join-Path $ScriptBaseDir ".config"
+if (-not (Test-Path $ConfigDir)) {
+    try {
+        New-Item -Path $ConfigDir -ItemType Directory -Force -ErrorAction Stop | Out-Null
+    } catch {
+        Write-Host "`n初始化失败：无法在当前目录创建 .config 配置目录。" -ForegroundColor Red
+        Write-Host "这通常不是脚本本身坏了，而是当前目录没有写入权限，或文件正被系统/杀软占用。" -ForegroundColor Yellow
+        Write-Host "请将助手完整解压到普通目录后重试，例如 D:\\jiuguan 或桌面。" -ForegroundColor Yellow
+        Write-Host "不要直接在压缩包内运行，也不要放在 Program Files、系统目录、只读目录或受控同步目录中。" -ForegroundColor Yellow
+        Write-Host "原始错误：$($_.Exception.Message)" -ForegroundColor DarkGray
+        Write-Host "`n请按任意键退出..." -ForegroundColor Cyan
+        $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") | Out-Null
+        exit 1
+    }
+}
+$BackupPrefsConfigFile = Join-Path $ConfigDir "backup_prefs.conf"
+$GitSyncConfigFile = Join-Path $ConfigDir "git_sync.conf"
+$ProxyConfigFile = Join-Path $ConfigDir "proxy.conf"
+$SyncRulesConfigFile = Join-Path $ConfigDir "sync_rules.conf"
+$AgreementFile = Join-Path $ConfigDir ".agreement_shown"
+$LabConfigFile = Join-Path $ConfigDir "lab.conf"
+$GcliDir = Join-Path $ScriptBaseDir "gcli2api"
+$script:GuguTransitExtRepoUrl = $null
+$script:GuguTransitPluginRepoUrl = $null
+$GuguTransitRouteModeKey = "GUGU_TRANSIT_ROUTE_MODE"
+$GuguTransitRouteModeFollow = "follow"
+$GuguTransitRouteModeGitHub = "github"
+$GuguTransitRouteModeGitee = "gitee"
+$GuguTransitExtRepoGitHubUrl = "https://github.com/qingjue723/gugu-transit-manager.git"
+$GuguTransitPluginRepoGitHubUrl = "https://github.com/qingjue723/gugu-transit-manager-plugin.git"
+$GuguTransitExtRepoGiteeUrl = "https://gitee.com/canaan723/gugu-transit-manager.git"
+$GuguTransitPluginRepoGiteeUrl = "https://gitee.com/canaan723/gugu-transit-manager-plugin.git"
+$GuguTransitExtTarget = Join-Path $ST_Dir "public/scripts/extensions/third-party/gugu-transit-manager"
+$GuguTransitPluginTarget = Join-Path $ST_Dir "plugins/gugu-transit-manager-plugin"
+$GuguTransitExtDir = $GuguTransitExtTarget
+$GuguTransitPluginDir = $GuguTransitPluginTarget
+$LegacyGuguBoxDir = Join-Path $ScriptBaseDir "gugu-box"
+$LegacyGuguTransitExtDir = Join-Path $LegacyGuguBoxDir "gugu-transit-manager"
+$LegacyGuguTransitPluginDir = Join-Path $LegacyGuguBoxDir "gugu-transit-manager-plugin"
+# 补全 AI Studio 相关路径变量
+$ais2apiDir = Join-Path $ScriptBaseDir "ais2api"
+$camoufoxDir = Join-Path $ais2apiDir "camoufox"
+$camoufoxExe = Join-Path $camoufoxDir "camoufox.exe"
+
+$Mirror_List = @(
+    [PSCustomObject]@{ Name = "git.ark.xx.kg"; Host = "git.ark.xx.kg"; BaseUrl = "https://git.ark.xx.kg"; UrlStrategy = "GhPath" },
+    [PSCustomObject]@{ Name = "git.723123.xyz"; Host = "git.723123.xyz"; BaseUrl = "https://git.723123.xyz"; UrlStrategy = "GhPath" },
+    [PSCustomObject]@{ Name = "xget.xi-xu.me"; Host = "xget.xi-xu.me"; BaseUrl = "https://xget.xi-xu.me"; UrlStrategy = "GhPath" },
+    [PSCustomObject]@{ Name = "gh-proxy.com"; Host = "gh-proxy.com"; BaseUrl = "https://gh-proxy.com"; UrlStrategy = "GithubPath" },
+    [PSCustomObject]@{ Name = "gh.llkk.cc"; Host = "gh.llkk.cc"; BaseUrl = "https://gh.llkk.cc"; UrlStrategy = "AbsoluteUrl" },
+    [PSCustomObject]@{ Name = "tvv.tw"; Host = "tvv.tw"; BaseUrl = "https://tvv.tw"; UrlStrategy = "AbsoluteUrl" },
+    [PSCustomObject]@{ Name = "proxy.pipers.cn"; Host = "proxy.pipers.cn"; BaseUrl = "https://proxy.pipers.cn"; UrlStrategy = "AbsoluteUrl" },
+    [PSCustomObject]@{ Name = "gh.catmak.name"; Host = "gh.catmak.name"; BaseUrl = "https://gh.catmak.name"; UrlStrategy = "AbsoluteUrl" },
+    [PSCustomObject]@{ Name = "hub.gitmirror.com"; Host = "hub.gitmirror.com"; BaseUrl = "https://hub.gitmirror.com"; UrlStrategy = "AbsoluteUrl" },
+    [PSCustomObject]@{ Name = "gh-proxy.net"; Host = "gh-proxy.net"; BaseUrl = "https://gh-proxy.net"; UrlStrategy = "AbsoluteUrl" },
+    [PSCustomObject]@{ Name = "hubproxy-advj.onrender.com"; Host = "hubproxy-advj.onrender.com"; BaseUrl = "https://hubproxy-advj.onrender.com"; UrlStrategy = "AbsoluteUrl" }
+)
+
+function Show-Header {
+    Write-Host "    " -NoNewline; Write-Host ">>" -ForegroundColor Yellow -NoNewline; Write-Host " 清绝咕咕助手 $($ScriptVersion)" -ForegroundColor Green
+    Write-Host "       " -NoNewline; Write-Host "作者: 清绝 | 网址: blog.qjyg.de" -ForegroundColor DarkGray
+    Write-Host "    " -NoNewline; Write-Host "本脚本为免费工具，严禁用于商业倒卖！" -ForegroundColor Red
+}
+
+function Write-Header($Title) { Write-Host "`n═══ $($Title) ═══" -ForegroundColor Cyan }
+function Write-Success($Message) { Write-Host "✓ $Message" -ForegroundColor Green }
+function Write-Warning($Message) { Write-Host "⚠ $Message" -ForegroundColor Yellow }
+function Write-Error($Message) { Write-Host "✗ $Message" -ForegroundColor Red }
+function Write-ErrorExit($Message) { Write-Host "`n✗ $Message`n流程已终止。" -ForegroundColor Red; Press-Any-Key; exit }
+function Press-Any-Key { Write-Host "`n请按任意键返回..." -ForegroundColor Cyan; $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") | Out-Null }
+$script:GitLastOutputLines = @()
+$AnsiReset = "$([char]27)[0m"
+$SoftRose = "$([char]27)[38;5;217m"
+$SoftPeach = "$([char]27)[38;5;223m"
+$SoftGold = "$([char]27)[38;5;222m"
+$SoftMint = "$([char]27)[38;5;151m"
+$SoftAqua = "$([char]27)[38;5;159m"
+$SoftSky = "$([char]27)[38;5;117m"
+$SoftLavender = "$([char]27)[38;5;183m"
+$SoftLilac = "$([char]27)[38;5;177m"
+$SoftCoral = "$([char]27)[38;5;216m"
+$SoftPinkRed = "$([char]27)[38;5;211m"
+
+function Get-SourceManifest {
+    if ($null -ne $script:SourceManifest) {
+        return $script:SourceManifest
+    }
+
+    try {
+        $content = (Invoke-WebRequest -Uri $SourceManifestUrl -UseBasicParsing -TimeoutSec 15 -ErrorAction Stop).Content
+        if ([string]::IsNullOrWhiteSpace($content)) {
+            throw "清单内容为空。"
+        }
+        $script:SourceManifest = $content | ConvertFrom-Json -ErrorAction Stop
+        return $script:SourceManifest
+    } catch {
+        throw "无法获取发布源清单：$($_.Exception.Message)"
+    }
+}
+
+function Get-RequiredManifestValue {
+    param(
+        [string]$Section,
+        [Parameter(Mandatory=$true)][string]$Key
+    )
+
+    $manifest = Get-SourceManifest
+    if ([string]::IsNullOrWhiteSpace($Section)) {
+        $value = [string]$manifest.$Key
+    } else {
+        $container = $manifest.$Section
+        if ($null -eq $container) {
+            throw "发布源清单缺少区块：$Section"
+        }
+        $value = [string]$container.$Key
+    }
+
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        if ([string]::IsNullOrWhiteSpace($Section)) {
+            throw "发布源清单缺少字段：$Key"
+        }
+        throw "发布源清单缺少字段：$Section.$Key"
+    }
+
+    return $value
+}
+
+function Initialize-FirstPartySources {
+    if (-not [string]::IsNullOrWhiteSpace($script:ScriptSelfUpdateUrl) -and
+        -not [string]::IsNullOrWhiteSpace($script:GuguTransitExtRepoUrl) -and
+        -not [string]::IsNullOrWhiteSpace($script:GuguTransitPluginRepoUrl) -and
+        -not [string]::IsNullOrWhiteSpace($script:SourceProvider)) {
+        return
+    }
+
+    $script:SourceProvider = Get-RequiredManifestValue -Key "provider"
+    $script:ScriptSelfUpdateUrl = Get-RequiredManifestValue -Section "raw" -Key $FirstPartyScriptKey
+    $script:GuguTransitExtRepoUrl = Get-RequiredManifestValue -Section "repos" -Key "gugu_transit_manager"
+    $script:GuguTransitPluginRepoUrl = Get-RequiredManifestValue -Section "repos" -Key "gugu_transit_manager_plugin"
+}
+
+function Get-DisplayWidth {
+    param([string]$Text)
+
+    $width = 0
+    foreach ($char in $Text.ToCharArray()) {
+        if ([int][char]$char -le 127) {
+            $width += 1
+        } else {
+            $width += 2
+        }
+    }
+    return $width
+}
+
+function Pad-DisplayText {
+    param(
+        [string]$Text,
+        [int]$Width
+    )
+
+    $displayWidth = Get-DisplayWidth -Text $Text
+    if ($displayWidth -ge $Width) {
+        return $Text
+    }
+
+    return $Text + (" " * ($Width - $displayWidth))
+}
+
+function Get-STCurrentMode {
+    if (-not (Test-Path (Join-Path $ST_Dir ".git"))) {
+        return "unknown"
+    }
+    try {
+        $branch = (git -C $ST_Dir rev-parse --abbrev-ref HEAD 2>$null)
+        if ($branch -and ($branch -eq "luker" -or $branch -like "*luker*")) {
+            return "luker"
+        }
+        $remoteUrl = (git -C $ST_Dir config --get "branch.$branch.remote" 2>$null)
+        if ($remoteUrl -and $remoteUrl -eq "luker") {
+            return "luker"
+        }
+    } catch {}
+    return "st"
+}
+
+function Write-MenuCell {
+    param(
+        [int]$Number,
+        [string]$Label,
+        [string]$Color = "",
+        [int]$Width = 18
+    )
+
+    $text = ("  [{0:d2}] {1}" -f $Number, (Pad-DisplayText -Text $Label -Width $Width))
+    if ([string]::IsNullOrWhiteSpace($Color)) {
+        Write-Host $text -NoNewline
+        return
+    }
+
+    Write-Host ($Color + $text + $AnsiReset) -NoNewline
+}
+
+function Invoke-GitWithProgress {
+    param(
+        [Parameter(Mandatory = $true)] [string]$OperationName,
+        [Parameter(Mandatory = $true)] [string[]]$GitArgs,
+        [switch]$SanitizeOutput
+    )
+
+    $script:GitLastOutputLines = @()
+    Write-Warning "$OperationName：正在执行 Git 操作并实时显示进度..."
+
+    $outputBuffer = New-Object System.Collections.Generic.List[string]
+    & git @GitArgs 2>&1 | ForEach-Object {
+        $line = "$_"
+        if ($SanitizeOutput) {
+            $line = Sanitize-GitOutput $line
+        }
+        [void]$outputBuffer.Add($line)
+        Write-Host $line
+    }
+
+    $script:GitLastOutputLines = $outputBuffer.ToArray()
+    return ($LASTEXITCODE -eq 0)
+}
+
+function Test-GitLastOutput {
+    param([Parameter(Mandatory = $true)] [string]$Pattern)
+    if (-not $script:GitLastOutputLines -or $script:GitLastOutputLines.Count -eq 0) { return $false }
+    $text = $script:GitLastOutputLines -join "`n"
+    return ($text -match $Pattern)
+}
+
+function Get-GitLastOutputTail {
+    param([int]$Lines = 20)
+    if (-not $script:GitLastOutputLines -or $script:GitLastOutputLines.Count -eq 0) { return "" }
+    $startIndex = [Math]::Max(0, $script:GitLastOutputLines.Count - $Lines)
+    return (@($script:GitLastOutputLines[$startIndex..($script:GitLastOutputLines.Count - 1)]) -join "`n")
+}
+
+function Get-GitConflictPreview {
+    param([int]$Lines = 8)
+    if (-not $script:GitLastOutputLines -or $script:GitLastOutputLines.Count -eq 0) { return "" }
+    $candidates = New-Object System.Collections.Generic.List[string]
+    foreach ($rawLine in $script:GitLastOutputLines) {
+        $line = "$rawLine" -replace '\x1B\[[0-9;]*[A-Za-z]', ''
+        $trimmed = $line.Trim()
+        if ([string]::IsNullOrWhiteSpace($trimmed)) { continue }
+
+        if ($trimmed -match 'CONFLICT.* in ([^\s]+)') {
+            [void]$candidates.Add($Matches[1])
+            continue
+        }
+
+        if ($trimmed -match 'package-lock\.json|yarn\.lock|pnpm-lock\.yaml|npm-shrinkwrap\.json|index\.lock') {
+            [void]$candidates.Add($trimmed)
+            continue
+        }
+
+        if ($line -match '^\s+\S') {
+            if ($trimmed -notmatch '^(Please commit|Aborting|error:|fatal:|hint:|remote:|To )') {
+                [void]$candidates.Add($trimmed)
+            }
+        }
+    }
+
+    $preview = @($candidates | Select-Object -Unique | Select-Object -First $Lines)
+    if ($preview.Count -eq 0) {
+        return (Get-GitLastOutputTail -Lines $Lines)
+    }
+
+    return ($preview -join "`n")
+}
+
+function Get-GitUnmergedFilesPreview {
+    param([int]$Lines = 8)
+    try {
+        $files = git diff --name-only --diff-filter=U 2>$null
+    } catch {
+        return ""
+    }
+
+    $files = @($files | ForEach-Object { "$_".Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($files.Count -eq 0) { return "" }
+
+    $preview = @($files | Select-Object -First $Lines)
+    if ($files.Count -gt $Lines) {
+        $preview += "...（其余省略，共 $($files.Count) 个未解决冲突文件）"
+    }
+    return ($preview -join "`n")
+}
+
+function Get-GitRepoIssueSummary {
+    $issues = New-Object System.Collections.Generic.List[string]
+
+    try {
+        $unmergedFiles = @(git diff --name-only --diff-filter=U 2>$null | ForEach-Object { "$_".Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        if ($unmergedFiles.Count -gt 0) {
+            [void]$issues.Add("未解决冲突文件: $($unmergedFiles.Count) 个")
+        }
+    } catch {}
+
+    if (Test-Path ".git/MERGE_HEAD") { [void]$issues.Add("检测到未完成的 merge 状态") }
+    if (Test-Path ".git/CHERRY_PICK_HEAD") { [void]$issues.Add("检测到未完成的 cherry-pick 状态") }
+    if (Test-Path ".git/REVERT_HEAD") { [void]$issues.Add("检测到未完成的 revert 状态") }
+    if ((Test-Path ".git/rebase-merge") -or (Test-Path ".git/rebase-apply")) { [void]$issues.Add("检测到未完成的 rebase 状态") }
+
+    $lockCandidates = @(".git/index.lock", ".git/shallow.lock", ".git/packed-refs.lock", ".git/config.lock")
+    $lockFiles = @($lockCandidates | Where-Object { Test-Path $_ } | ForEach-Object { Split-Path $_ -Leaf })
+    if ($lockFiles.Count -gt 0) {
+        [void]$issues.Add("Git 锁文件残留: $($lockFiles -join ', ')")
+    }
+
+    return @($issues.ToArray())
+}
+
+function Invoke-GitWorkspaceAutoRepair {
+    param(
+        [string]$Branch = $Repo_Branch,
+        [switch]$DeepClean
+    )
+
+    Write-Warning "正在执行 Git 一键自愈..."
+
+    $lockCandidates = @(".git/index.lock", ".git/shallow.lock", ".git/packed-refs.lock", ".git/config.lock")
+    foreach ($lockPath in $lockCandidates) {
+        if (Test-Path $lockPath) {
+            Remove-Item $lockPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    $abortCommands = @(
+        @('merge', '--abort'),
+        @('rebase', '--abort'),
+        @('cherry-pick', '--abort'),
+        @('revert', '--abort'),
+        @('am', '--abort')
+    )
+    foreach ($args in $abortCommands) {
+        & git @args 2>$null | Out-Null
+    }
+
+    if ($DeepClean) {
+        & git reset --hard "origin/$Branch" 2>$null | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            & git reset --hard HEAD 2>$null | Out-Null
+            if ($LASTEXITCODE -ne 0) { return $false }
+        }
+        & git checkout -B $Branch "origin/$Branch" 2>$null | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            & git checkout -B $Branch 2>$null | Out-Null
+        }
+        & git clean -fd 2>$null | Out-Null
+        if ($LASTEXITCODE -ne 0) { return $false }
+    } else {
+        & git reset --merge 2>$null | Out-Null
+    }
+
+    return $true
+}
+
+function Read-YesNoPrompt {
+    param(
+        [Parameter(Mandatory=$true)] [string]$Label,
+        [bool]$DefaultYes = $true,
+        [string]$Note
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($Note)) {
+        Write-Host $Note -ForegroundColor DarkGray
+    }
+
+    $suffix = if ($DefaultYes) { "[Y/n]" } else { "[y/N]" }
+    while ($true) {
+        $input = Read-Host "$Label $suffix"
+        if ([string]::IsNullOrWhiteSpace($input)) { return $DefaultYes }
+
+        switch ($input.Trim().ToLowerInvariant()) {
+            "y" { return $true }
+            "n" { return $false }
+            default { Write-Warning "请输入 y 或 n。" }
+        }
+    }
+}
+
+function Read-TextPrompt {
+    param(
+        [Parameter(Mandatory=$true)] [string]$Label,
+        [string]$DefaultValue,
+        [string]$Hint,
+        [bool]$Required = $false
+    )
+
+    $hasDefault = $PSBoundParameters.ContainsKey("DefaultValue") -and -not [string]::IsNullOrWhiteSpace($DefaultValue)
+    $prompt = $Label
+    if (-not [string]::IsNullOrWhiteSpace($Hint)) {
+        $prompt = "$prompt [$Hint]"
+    } elseif ($hasDefault) {
+        $prompt = "$prompt [默认: $DefaultValue]"
+    }
+
+    while ($true) {
+        $input = Read-Host $prompt
+        if ([string]::IsNullOrWhiteSpace($input)) {
+            if ($hasDefault) { return $DefaultValue }
+            if ($Required) {
+                Write-Warning "不能为空，请重试。"
+                continue
+            }
+            return ""
+        }
+
+        return $input.Trim()
+    }
+}
+
+function Read-MenuPrompt {
+    param([Parameter(Mandatory=$true)] [string]$Allowed)
+    return (Read-Host "`n请选择 [$Allowed]").Trim()
+}
+
+function Read-KeywordConfirm {
+    param(
+        [string]$Keyword = "yes",
+        [string]$ActionText = "继续"
+    )
+
+    $input = Read-Host "输入 $Keyword $ActionText"
+    return $input.Trim().ToLowerInvariant() -eq $Keyword.ToLowerInvariant()
+}
+
+function Check-Command($Command) {
+    # 首先尝试使用 Get-Command 检测
+    $cmd = Get-Command $Command -ErrorAction SilentlyContinue
+    if ($cmd) { return $true }
+    
+    # 如果 Get-Command 失败，尝试直接运行命令验证
+    try {
+        $testOutput = & $Command --version 2>&1
+        if ($LASTEXITCODE -eq 0 -or $testOutput) { return $true }
+    } catch {
+        # 忽略异常，继续返回 false
+    }
+    
+    return $false
+}
+
+function Get-STConfigValue {
+    param([string]$Key)
+    $configPath = Join-Path $ST_Dir "config.yaml"
+    if (-not (Test-Path $configPath)) { return $null }
+    $content = Get-Content $configPath -Raw
+    # 仅匹配根层级的键，避免误触嵌套键（如 browserLaunch.port）
+    if ($content -match "(?m)^${Key}:\s*([^#\r\n]*)(.*)$") {
+        return $Matches[1].Trim().Trim("'").Trim('"')
+    }
+    return $null
+}
+
+function Get-STNestedConfigValue {
+    param([string]$ParentKey, [string]$Key)
+    $configPath = Join-Path $ST_Dir "config.yaml"
+    if (-not (Test-Path $configPath)) { return $null }
+    $content = Get-Content $configPath -Raw
+    if ($content -match "(?ms)^${ParentKey}:\s*.*?^\s+${Key}:\s*([^#\r\n]*)(.*)$") {
+        return $Matches[1].Trim().Trim("'").Trim('"')
+    }
+    return $null
+}
+
+function Update-STConfigValue {
+    param([string]$Key, [string]$Value)
+    $configPath = Join-Path $ST_Dir "config.yaml"
+    if (-not (Test-Path $configPath)) { return $false }
+    $content = Get-Content $configPath -Raw
+    # 仅匹配根层级的键，保留键名缩进，并尝试保留行尾注释
+    # 使用 ${1} 和 ${2} 避免在 $Value 为数字时产生歧义
+    $pattern = "(?m)^(${Key}:\s*)[^#\r\n]*(.*)$"
+    if ($content -match $pattern) {
+        $newContent = $content -replace $pattern, ('${1}' + $Value + '${2}')
+        [System.IO.File]::WriteAllText($configPath, $newContent, [System.Text.Encoding]::UTF8)
+        return $true
+    }
+    return $false
+}
+
+function Update-STNestedConfigValue {
+    param([string]$ParentKey, [string]$Key, [string]$Value)
+    $configPath = Join-Path $ST_Dir "config.yaml"
+    if (-not (Test-Path $configPath)) { return $false }
+    $content = Get-Content $configPath -Raw
+    # 匹配父键下的子键，考虑缩进
+    $pattern = "(?ms)^(${ParentKey}:\s*.*?^\s+)${Key}:\s*[^#\r\n]*(.*)$"
+    if ($content -match $pattern) {
+        $newContent = $content -replace $pattern, ('${1}' + $Key + ': ' + $Value + '${2}')
+        [System.IO.File]::WriteAllText($configPath, $newContent, [System.Text.Encoding]::UTF8)
+        return $true
+    }
+    return $false
+}
+
+function Set-STRootBooleanValue {
+    param([string]$Key, [bool]$Enabled)
+    $configPath = Join-Path $ST_Dir "config.yaml"
+    if (-not (Test-Path $configPath)) { return $false }
+
+    $targetValue = if ($Enabled) { 'true' } else { 'false' }
+    $lines = [System.Collections.Generic.List[string]]::new()
+    $lines.AddRange([string[]](Get-Content $configPath))
+    $updated = $false
+
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -match "^\s*${Key}:") {
+            $lines[$i] = "${Key}: $targetValue"
+            $updated = $true
+            break
+        }
+    }
+
+    if (-not $updated) {
+        $lines.Add('')
+        $lines.Add("${Key}: $targetValue")
+    }
+
+    [System.IO.File]::WriteAllText($configPath, (($lines -join "`r`n") + "`r`n"), [System.Text.Encoding]::UTF8)
+    return $true
+}
+
+function Set-STNestedBooleanValue {
+    param([string]$ParentKey, [string]$Key, [bool]$Enabled)
+    $configPath = Join-Path $ST_Dir "config.yaml"
+    if (-not (Test-Path $configPath)) { return $false }
+
+    $targetValue = if ($Enabled) { 'true' } else { 'false' }
+    $lines = [System.Collections.Generic.List[string]]::new()
+    $lines.AddRange([string[]](Get-Content $configPath))
+    $parentIndex = -1
+    $updated = $false
+
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -match "^\s*${ParentKey}:\s*(#.*)?$") {
+            $parentIndex = $i
+            for ($j = $i + 1; $j -lt $lines.Count; $j++) {
+                if ($lines[$j] -match '^[^\s]') { break }
+                if ($lines[$j] -match "^\s+${Key}:") {
+                    $lines[$j] = "  ${Key}: $targetValue"
+                    $updated = $true
+                    break
+                }
+            }
+            break
+        }
+    }
+
+    if (-not $updated) {
+        if ($parentIndex -ge 0) {
+            $lines.Insert($parentIndex + 1, "  ${Key}: $targetValue")
+        } else {
+            $lines.Add('')
+            $lines.Add("${ParentKey}:")
+            $lines.Add("  ${Key}: $targetValue")
+        }
+    }
+
+    [System.IO.File]::WriteAllText($configPath, (($lines -join "`r`n") + "`r`n"), [System.Text.Encoding]::UTF8)
+    return $true
+}
+
+function Get-STStartHeapLimit {
+    $startBatPath = Join-Path $ST_Dir "Start.bat"
+    if (-not (Test-Path $startBatPath)) { return $null }
+    $content = Get-Content $startBatPath -Raw
+    if ($content -match '--max-old-space-size=(\d+)') {
+        return $Matches[1]
+    }
+    return $null
+}
+
+function Get-STRecommendedHeapLimitMb {
+    try {
+        $value = [int]((Get-CimInstance -ClassName Win32_OperatingSystem).FreePhysicalMemory / 1024 * 0.75)
+        if ($value -lt 256) { return 256 }
+        return $value
+    } catch {
+        return $null
+    }
+}
+
+function Write-FileUtf8NoBom {
+    param(
+        [string]$Path,
+        [string]$Content
+    )
+    [System.IO.File]::WriteAllText($Path, $Content, [System.Text.UTF8Encoding]::new($false))
+}
+
+function Set-STStartHeapLimit {
+    param([int]$HeapMb)
+    $startBatPath = Join-Path $ST_Dir "Start.bat"
+    if (-not (Test-Path $startBatPath)) { return $false }
+
+    $content = Get-Content $startBatPath -Raw
+    if ($content -match '--max-old-space-size=\d+') {
+        $newContent = $content -replace '--max-old-space-size=\d+', "--max-old-space-size=$HeapMb"
+    } else {
+        $pattern = '(?m)^([ \t]*node)\s+("?server\.js"?\s+%.*)$'
+        $newContent = $content -replace $pattern, ('$1 --max-old-space-size=' + $HeapMb + ' $2')
+    }
+
+    if ($newContent -eq $content) { return $false }
+    Write-FileUtf8NoBom -Path $startBatPath -Content $newContent
+    return $true
+}
+
+function Clear-STStartHeapLimit {
+    $startBatPath = Join-Path $ST_Dir "Start.bat"
+    if (-not (Test-Path $startBatPath)) { return $false }
+
+    $content = Get-Content $startBatPath -Raw
+    $newContent = $content -replace '\s+--max-old-space-size=\d+', ''
+    if ($newContent -eq $content) { return $true }
+    Write-FileUtf8NoBom -Path $startBatPath -Content $newContent
+    return $true
+}
+
+function Show-STOomMemoryMenu {
+    while ($true) {
+        Clear-Host
+        Write-Header "OOM 内存修复"
+        if (-not (Test-Path (Join-Path $ST_Dir "Start.bat"))) {
+            Write-Warning "未找到 Start.bat，请先部署酒馆。"
+            Press-Any-Key
+            return
+        }
+
+        $currentLimit = Get-STStartHeapLimit
+        $recommendedLimit = Get-STRecommendedHeapLimitMb
+        Write-Host "      当前启动内存上限: " -NoNewline
+        if ([string]::IsNullOrWhiteSpace($currentLimit)) { Write-Host "默认" -ForegroundColor Yellow } else { Write-Host "$currentLimit MB" -ForegroundColor Green }
+        Write-Host "      推荐设置值: " -NoNewline
+        if ($null -eq $recommendedLimit) { Write-Host "计算失败" -ForegroundColor Red } else { Write-Host "$recommendedLimit MB" -ForegroundColor Yellow }
+        Write-Host "`n      仅在出现 JavaScript heap out of memory 时建议修改。"
+        Write-Host "      [1] " -NoNewline; Write-Host "一键设置为推荐值" -ForegroundColor Cyan
+        Write-Host "      [2] " -NoNewline; Write-Host "手动设置内存上限" -ForegroundColor Cyan
+        Write-Host "      [3] " -NoNewline; Write-Host "恢复默认启动参数" -ForegroundColor Yellow
+        Write-Host "      [0] " -NoNewline; Write-Host "返回上一级" -ForegroundColor Cyan
+
+        $choice = Read-MenuPrompt -Allowed "0-3"
+        switch ($choice) {
+            "1" {
+                if ($null -eq $recommendedLimit) {
+                    Write-Error "无法计算推荐值，请手动设置。"
+                } elseif (Set-STStartHeapLimit -HeapMb $recommendedLimit) {
+                    Write-Success "已将启动内存上限设置为 $recommendedLimit MB。"
+                    Write-Warning "设置将在重启酒馆后生效。"
+                } else {
+                    Write-Error "写入 Start.bat 失败。"
+                }
+                Press-Any-Key
+            }
+            "2" {
+                $manualLimit = Read-TextPrompt -Label "内存上限(MB)" -DefaultValue "$recommendedLimit"
+                if ($manualLimit -match '^\d+$' -and [int]$manualLimit -ge 256) {
+                    if (Set-STStartHeapLimit -HeapMb ([int]$manualLimit)) {
+                        Write-Success "已将启动内存上限设置为 $manualLimit MB。"
+                        Write-Warning "设置将在重启酒馆后生效。"
+                    } else {
+                        Write-Error "写入 Start.bat 失败。"
+                    }
+                } else {
+                    Write-Error "请输入不小于 256 的整数。"
+                }
+                Press-Any-Key
+            }
+            "3" {
+                if (Clear-STStartHeapLimit) {
+                    Write-Success "已恢复默认启动参数。"
+                    Write-Warning "设置将在重启酒馆后生效。"
+                } else {
+                    Write-Error "写入 Start.bat 失败。"
+                }
+                Press-Any-Key
+            }
+            "0" { return }
+            default { Write-Warning "输入无效，请按提示重试。"; Start-Sleep 1 }
+        }
+    }
+}
+
+function Add-STWhitelistEntry {
+    param([string]$Entry)
+    $configPath = Join-Path $ST_Dir "config.yaml"
+    if (-not (Test-Path $configPath)) { return $false }
+    $content = Get-Content $configPath -Raw
+    
+    # 检查是否已存在
+    if ($content -match "- $Entry") { return $true }
+
+    # 寻找 whitelist: 这一行
+    if ($content -match "(?m)^whitelist:\s*\r?\n") {
+        $newContent = $content -replace "(?m)^whitelist:\s*\r?\n", "whitelist:`n  - $Entry`n"
+        [System.IO.File]::WriteAllText($configPath, $newContent, [System.Text.Encoding]::UTF8)
+        return $true
+    }
+    return $false
+}
+
+function Check-PortAndShowError {
+    param([string]$SillyTavernPath)
+    $configPath = Join-Path $SillyTavernPath "config.yaml"
+    $port = 8000
+
+    if (Test-Path $configPath) {
+        try {
+            $configContent = Get-Content $configPath -Raw
+            $portLine = $configContent | Select-String -Pattern "(?m)^\s*port:\s*(\d+)"
+            if ($portLine) {
+                $port = [int]$portLine.Matches[0].Groups[1].Value
+            }
+        } catch {
+            Write-Warning "无法解析 config.yaml 中的端口号，将使用默认端口 8000 进行检查。"
+        }
+    }
+
+    $connection = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
+    if ($null -ne $connection) {
+        $owningProcess = Get-Process -Id $connection.OwningProcess | Select-Object -First 1
+        Write-Error "启动失败：端口 $port 已被占用！"
+        Write-Host "  - 占用程序: $($owningProcess.ProcessName) (PID: $($owningProcess.Id))" -ForegroundColor Yellow
+        Write-Host "`n请尝试以下解决方案：" -ForegroundColor Cyan
+        Write-Host "  1. 如果是之前启动的酒馆未完全关闭，请先【重启电脑】。" -ForegroundColor Cyan
+        Write-Host "  2. 如果重启无效，请在主菜单选择 [11] 酒馆配置管理，" -ForegroundColor Cyan
+        Write-Host "     将端口修改为其他未被占用的端口号 (如 8001)。" -ForegroundColor Cyan
+        Write-ErrorExit "无法继续启动。"
+    }
+}
+
+function Show-AgreementIfFirstRun {
+    if (-not (Test-Path $AgreementFile)) {
+        Clear-Host
+        Write-Header "使用前必看"
+        Write-Host "`n 1. 我是咕咕助手的作者清绝，咕咕助手是 " -NoNewline; Write-Host "完全免费" -ForegroundColor Green -NoNewline; Write-Host " 的，唯一发布地址 " -NoNewline; Write-Host "https://blog.qjyg.de" -ForegroundColor Cyan -NoNewline; Write-Host "，内含宝宝级教程。"
+        Write-Host " 2. 如果你是 " -NoNewline; Write-Host "花钱买的" -ForegroundColor Yellow -NoNewline; Write-Host "，那你绝对是 " -NoNewline; Write-Host "被坑了" -ForegroundColor Red -NoNewline; Write-Host "，赶紧退款差评举报。"
+        Write-Host " 3. " -NoNewline; Write-Host "严禁拿去倒卖！" -ForegroundColor Red -NoNewline; Write-Host "偷免费开源的东西赚钱，丢人现眼。"
+        Write-Host "`n【盗卖名单】" -ForegroundColor Red
+        Write-Host " -> 淘宝：" -NoNewline; Write-Host "灿灿AI科技" -ForegroundColor Red
+        Write-Host " （持续更新）"
+        Write-Host "`n发现盗卖的欢迎告诉我，感谢支持。" -ForegroundColor Green
+        Write-Host "─────────────────────────────────────────────────────────────"
+        if (Read-KeywordConfirm -Keyword "yes" -ActionText "继续") {
+            if (-not (Test-Path $ConfigDir)) { New-Item -Path $ConfigDir -ItemType Directory -Force | Out-Null }
+            New-Item -Path $AgreementFile -ItemType File -Force | Out-Null
+            Write-Host "`n感谢您的支持！正在进入助手..." -ForegroundColor Green
+            Start-Sleep -Seconds 2
+        } else {
+            Write-Host "`n您未同意使用条款，脚本将自动退出。" -ForegroundColor Red
+            exit
+        }
+    }
+}
+
+function Get-UserFolders {
+    param([string]$baseDataPath)
+    $systemFolders = @("_cache", "_storage", "_uploads", "_webpack")
+    return Get-ChildItem -Path $baseDataPath -Directory -ErrorAction SilentlyContinue | Where-Object { $systemFolders -notcontains $_.Name }
+}
+
+function Format-ElapsedTime {
+    param($Milliseconds)
+    if ($null -eq $Milliseconds -or $Milliseconds -lt 0) { return "--" }
+    if ([double]$Milliseconds -lt 1000) {
+        return ("{0:N0} ms" -f [double]$Milliseconds)
+    }
+    return ("{0:N2} s" -f ([double]$Milliseconds / 1000))
+}
+
+function New-DownloadCandidate {
+    param(
+        [string]$Name,
+        [string]$CandidateHost,
+        [bool]$IsOfficial,
+        [string]$GitUrl,
+        [string]$FileUrl
+    )
+    return [PSCustomObject]@{
+        Name       = $Name
+        Host       = $CandidateHost
+        IsOfficial = $IsOfficial
+        GitUrl     = $GitUrl
+        FileUrl    = $FileUrl
+        GitMs      = $null
+        FileMs     = $null
+        ScoreMs    = $null
+        Success    = $false
+    }
+}
+
+function Convert-GitHubUrlToMirrorUrl {
+    param(
+        [Parameter(Mandatory=$true)] $Mirror,
+        [string]$GitHubUrl
+    )
+    if ([string]::IsNullOrWhiteSpace($GitHubUrl)) { return $null }
+
+    $baseUrl = $Mirror.BaseUrl.TrimEnd('/')
+    switch ($Mirror.UrlStrategy) {
+        "GhPath" {
+            if ($GitHubUrl -notmatch '^https://github\.com/') { return $null }
+            $repoPath = $GitHubUrl -replace '^https://github\.com/', ''
+            return "$baseUrl/gh/$repoPath"
+        }
+        "GithubPath" {
+            if ($GitHubUrl -notmatch '^https://github\.com/') { return $null }
+            $repoPath = $GitHubUrl -replace '^https://github\.com/', ''
+            return "$baseUrl/github.com/$repoPath"
+        }
+        "AbsoluteUrl" {
+            return "$baseUrl/$GitHubUrl"
+        }
+        default {
+            return $null
+        }
+    }
+}
+
+function Get-GitUrlByRouteHost {
+    param(
+        [string]$RouteHost,
+        [string]$GitHubUrl
+    )
+
+    if ([string]::IsNullOrWhiteSpace($RouteHost) -or [string]::IsNullOrWhiteSpace($GitHubUrl)) {
+        return $null
+    }
+
+    if ($RouteHost -eq "github.com") {
+        return $GitHubUrl
+    }
+
+    $mirror = $Mirror_List | Where-Object { $_.Host -eq $RouteHost } | Select-Object -First 1
+    if ($null -eq $mirror) {
+        return $null
+    }
+
+    return (Convert-GitHubUrlToMirrorUrl -Mirror $mirror -GitHubUrl $GitHubUrl)
+}
+
+function Get-GitHubDownloadCandidates {
+    param(
+        [string]$GitUrl,
+        [string]$FileUrl
+    )
+
+    $candidates = New-Object System.Collections.Generic.List[object]
+    $candidates.Add((New-DownloadCandidate -Name "GitHub 官方线路" -CandidateHost "github.com" -IsOfficial $true -GitUrl $GitUrl -FileUrl $FileUrl))
+
+    foreach ($mirror in $Mirror_List) {
+        $mirrorGitUrl = Convert-GitHubUrlToMirrorUrl -Mirror $mirror -GitHubUrl $GitUrl
+        $mirrorFileUrl = Convert-GitHubUrlToMirrorUrl -Mirror $mirror -GitHubUrl $FileUrl
+
+        if (($GitUrl -and -not $mirrorGitUrl) -or ($FileUrl -and -not $mirrorFileUrl)) { continue }
+
+        $candidates.Add((New-DownloadCandidate -Name "镜像线路 ($($mirror.Name))" -CandidateHost $mirror.Host -IsOfficial $false -GitUrl $mirrorGitUrl -FileUrl $mirrorFileUrl))
+    }
+
+    return $candidates.ToArray()
+}
+
+function Invoke-WebProbe {
+    param(
+        [Parameter(Mandatory=$true)] [string]$Url,
+        [int]$TimeoutSeconds = 8
+    )
+
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $response = $null
+    try {
+        $request = [System.Net.WebRequest]::Create($Url)
+        $request.Method = "GET"
+        $request.Timeout = $TimeoutSeconds * 1000
+        if ($request -is [System.Net.HttpWebRequest]) {
+            $request.ReadWriteTimeout = $TimeoutSeconds * 1000
+            $request.UserAgent = "ST-Assistant/$ScriptVersion"
+        }
+
+        $response = $request.GetResponse()
+        $stopwatch.Stop()
+        $statusCode = if ($response -is [System.Net.HttpWebResponse]) { [int]$response.StatusCode } else { 200 }
+        return [PSCustomObject]@{
+            Success   = ($statusCode -ge 200 -and $statusCode -lt 400)
+            Url       = $Url
+            ElapsedMs = [Math]::Round($stopwatch.Elapsed.TotalMilliseconds, 2)
+            StatusCode = $statusCode
+            Error     = $null
+        }
+    } catch {
+        $stopwatch.Stop()
+        $statusCode = $null
+        if ($_.Exception.Response -and $_.Exception.Response -is [System.Net.HttpWebResponse]) {
+            $statusCode = [int]$_.Exception.Response.StatusCode
+        }
+        return [PSCustomObject]@{
+            Success   = $false
+            Url       = $Url
+            ElapsedMs = [Math]::Round($stopwatch.Elapsed.TotalMilliseconds, 2)
+            StatusCode = $statusCode
+            Error     = $_.Exception.Message
+        }
+    } finally {
+        if ($response) { $response.Close() }
+    }
+}
+
+function Test-BasicInternetConnectivity {
+    $probeUrls = @(
+        "https://www.msftconnecttest.com/connecttest.txt",
+        "https://www.baidu.com",
+        "https://www.qq.com"
+    )
+
+    $lastResult = $null
+    foreach ($probeUrl in $probeUrls) {
+        $probeResult = Invoke-WebProbe -Url $probeUrl -TimeoutSeconds 6
+        if ($probeResult.Success) { return $probeResult }
+        $lastResult = $probeResult
+    }
+
+    if ($null -eq $lastResult) {
+        return [PSCustomObject]@{
+            Success   = $false
+            Url       = $probeUrls[0]
+            ElapsedMs = $null
+            StatusCode = $null
+            Error     = "未能完成联网探测。"
+        }
+    }
+    return $lastResult
+}
+
+function Assert-BasicInternetConnectivity {
+    param([string]$OperationName)
+
+    Write-Warning "正在检测当前网络连通性..."
+    $probeResult = Test-BasicInternetConnectivity
+    if ($probeResult.Success) {
+        Write-Success "网络检测通过 ($($probeResult.Url)，耗时 $(Format-ElapsedTime $probeResult.ElapsedMs))。"
+        return $probeResult
+    }
+
+    Write-Error "$OperationName 前检测到当前网络不可用，已中止。"
+    Write-Host "请先确认网络已连通；如需代理，请在主菜单 [9] 配置后重试。" -ForegroundColor Cyan
+    return $null
+}
+
+function Test-GoogleReachability {
+    $googleTargets = @(
+        [PSCustomObject]@{ Name = 'www.google.com/robots.txt'; Url = 'https://www.google.com/robots.txt' },
+        [PSCustomObject]@{ Name = 'accounts.google.com'; Url = 'https://accounts.google.com/' }
+    )
+
+    $successfulTargets = New-Object System.Collections.Generic.List[string]
+    $failedTargets = New-Object System.Collections.Generic.List[string]
+    $maxElapsedMs = $null
+
+    foreach ($googleTarget in $googleTargets) {
+        $probeResult = Invoke-WebProbe -Url $googleTarget.Url -TimeoutSeconds 6
+        if ($probeResult.Success) {
+            [void]$successfulTargets.Add($googleTarget.Name)
+            if ($null -eq $maxElapsedMs -or $probeResult.ElapsedMs -gt $maxElapsedMs) {
+                $maxElapsedMs = $probeResult.ElapsedMs
+            }
+            continue
+        }
+        [void]$failedTargets.Add($googleTarget.Name)
+    }
+
+    $passedCount = $successfulTargets.Count
+    $totalCount = $googleTargets.Count
+    return [PSCustomObject]@{
+        Success           = ($passedCount -eq $totalCount)
+        PassedCount       = $passedCount
+        TotalCount        = $totalCount
+        ElapsedMs         = $maxElapsedMs
+        SuccessfulTargets = @($successfulTargets)
+        FailedTargets     = @($failedTargets)
+        Error             = if ($passedCount -eq $totalCount) { $null } else { "Google 地理位置探测未全部通过。" }
+    }
+}
+
+function Format-GoogleProbeTargets {
+    param(
+        [string[]]$Targets,
+        [string]$Fallback = "未知"
+    )
+
+    if ($Targets -and $Targets.Count -gt 0) {
+        return ($Targets -join ", ")
+    }
+
+    return $Fallback
+}
+
+function Test-GitHubDirectReachability {
+    param([int]$FluentThresholdMs = 4000)
+
+    $probeCandidate = New-DownloadCandidate -Name "GitHub 官方线路" -CandidateHost "github.com" -IsOfficial $true -GitUrl "https://github.com/octocat/Hello-World.git" -FileUrl $null
+    $probeResult = Measure-DownloadCandidates -Candidates @($probeCandidate) -RequireGit:$true -RequireFile:$false -TimeoutSeconds 10 | Select-Object -First 1
+    if ($probeResult -and $probeResult.Success) {
+        $probeResult | Add-Member -NotePropertyName Fluent -NotePropertyValue ($probeResult.ScoreMs -le $FluentThresholdMs) -Force
+        return $probeResult
+    }
+
+    return [PSCustomObject]@{
+        Name       = "GitHub 官方线路"
+        Host       = "github.com"
+        IsOfficial = $true
+        GitUrl     = "https://github.com/octocat/Hello-World.git"
+        FileUrl    = $null
+        Success    = $false
+        GitMs      = $null
+        FileMs     = $null
+        ScoreMs    = $null
+        Error      = if ($probeResult) { $probeResult.Error } else { "GitHub 连通性探测失败。" }
+        Fluent     = $false
+    }
+}
+
+function Assert-GitHubDirectConnectivity {
+    param([string]$OperationName)
+
+    $networkProbe = Assert-BasicInternetConnectivity -OperationName $OperationName
+    if (-not $networkProbe) { return $null }
+
+    Write-Warning "正在通过 Google 探测判断地理位置..."
+    $googleProbe = Test-GoogleReachability
+    if ($googleProbe.Success) {
+        $successfulTargets = Format-GoogleProbeTargets -Targets $googleProbe.SuccessfulTargets
+        Write-Success "Google 地理位置检测结果：判定为海外 ($($googleProbe.PassedCount)/$($googleProbe.TotalCount)，目标 $successfulTargets，耗时 $(Format-ElapsedTime $googleProbe.ElapsedMs))。"
+    } else {
+        $failedTargets = Format-GoogleProbeTargets -Targets $googleProbe.FailedTargets
+        Write-Warning "Google 地理位置检测结果：判定为中国大陆 ($($googleProbe.PassedCount)/$($googleProbe.TotalCount)，失败目标 $failedTargets)。"
+        Write-Warning "继续检测 GitHub 官方线路。"
+    }
+
+    Write-Warning "正在检测 GitHub 官方线路连通性..."
+    $githubProbe = Test-GitHubDirectReachability
+    if (-not $githubProbe.Success) {
+        Write-Error "$OperationName 前未能连通 GitHub 官方线路，已中止。"
+        Write-Host "该操作仅允许直连 GitHub，请检查代理设置、Git 全局代理或网络环境后重试。" -ForegroundColor Cyan
+        return $null
+    }
+
+    if ($githubProbe.Fluent) {
+        Write-Success "GitHub 官方线路可直连 (Git $(Format-ElapsedTime $githubProbe.ScoreMs))。"
+    } else {
+        Write-Warning "GitHub 官方线路可连通，但速度较慢 (Git $(Format-ElapsedTime $githubProbe.ScoreMs))。"
+    }
+
+    return [PSCustomObject]@{
+        Network = $networkProbe
+        Google  = $googleProbe
+        GitHub  = $githubProbe
+    }
+}
+
+function Measure-DownloadCandidates {
+    param(
+        [Parameter(Mandatory=$true)] [object[]]$Candidates,
+        [bool]$RequireGit = $true,
+        [bool]$RequireFile = $false,
+        [int]$TimeoutSeconds = 12
+    )
+
+    if ($Candidates.Count -eq 0) { return @() }
+    $jobTimeoutLimit = if ($RequireGit -and $RequireFile) { ($TimeoutSeconds * 2) + 2 } else { $TimeoutSeconds + 2 }
+
+    $proxySnapshot = @{
+        http_proxy  = $env:http_proxy
+        https_proxy = $env:https_proxy
+        all_proxy   = $env:all_proxy
+    }
+
+    $jobEntries = @()
+    foreach ($candidate in $Candidates) {
+        $job = Start-Job -ScriptBlock {
+            param($CandidateInfo, $NeedGit, $NeedFile, $ProbeTimeout, $ProxyEnv)
+
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+            foreach ($envKey in @('http_proxy', 'https_proxy', 'all_proxy')) {
+                if ($ProxyEnv.ContainsKey($envKey) -and -not [string]::IsNullOrWhiteSpace($ProxyEnv[$envKey])) {
+                    [Environment]::SetEnvironmentVariable($envKey, $ProxyEnv[$envKey], 'Process')
+                } else {
+                    [Environment]::SetEnvironmentVariable($envKey, $null, 'Process')
+                }
+            }
+
+            $result = [ordered]@{
+                Name       = $CandidateInfo.Name
+                Host       = $CandidateInfo.Host
+                IsOfficial = $CandidateInfo.IsOfficial
+                GitUrl     = $CandidateInfo.GitUrl
+                FileUrl    = $CandidateInfo.FileUrl
+                Success    = $false
+                GitMs      = $null
+                FileMs     = $null
+                ScoreMs    = $null
+                Error      = $null
+            }
+
+            if ($NeedGit) {
+                $gitStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+                try {
+                    git -c credential.helper='' ls-remote $CandidateInfo.GitUrl HEAD 2>&1 | Out-Null
+                    $gitStopwatch.Stop()
+                    if ($LASTEXITCODE -ne 0) {
+                        $result.Error = "Git 测试失败。"
+                        return [PSCustomObject]$result
+                    }
+                    $result.GitMs = [Math]::Round($gitStopwatch.Elapsed.TotalMilliseconds, 2)
+                } catch {
+                    $gitStopwatch.Stop()
+                    $result.Error = $_.Exception.Message
+                    return [PSCustomObject]$result
+                }
+            }
+
+            if ($NeedFile) {
+                $fileStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+                $response = $null
+                try {
+                    $request = [System.Net.WebRequest]::Create($CandidateInfo.FileUrl)
+                    $request.Method = "GET"
+                    $request.Timeout = $ProbeTimeout * 1000
+                    if ($request -is [System.Net.HttpWebRequest]) {
+                        $request.ReadWriteTimeout = $ProbeTimeout * 1000
+                        $request.UserAgent = "ST-Assistant"
+                    }
+
+                    $response = $request.GetResponse()
+                    $fileStopwatch.Stop()
+                    $statusCode = if ($response -is [System.Net.HttpWebResponse]) { [int]$response.StatusCode } else { 200 }
+                    if ($statusCode -lt 200 -or $statusCode -ge 400) {
+                        $result.Error = "文件测试返回状态码 $statusCode。"
+                        return [PSCustomObject]$result
+                    }
+                    $result.FileMs = [Math]::Round($fileStopwatch.Elapsed.TotalMilliseconds, 2)
+                } catch {
+                    $fileStopwatch.Stop()
+                    $result.Error = $_.Exception.Message
+                    return [PSCustomObject]$result
+                } finally {
+                    if ($response) { $response.Close() }
+                }
+            }
+
+            $timings = @()
+            if ($NeedGit -and $null -ne $result.GitMs) { $timings += [double]$result.GitMs }
+            if ($NeedFile -and $null -ne $result.FileMs) { $timings += [double]$result.FileMs }
+            if ($timings.Count -eq 0) {
+                $result.Error = "没有可用的测速结果。"
+                return [PSCustomObject]$result
+            }
+
+            $result.ScoreMs = [Math]::Round(($timings | Measure-Object -Maximum).Maximum, 2)
+            $result.Success = $true
+            return [PSCustomObject]$result
+        } -ArgumentList $candidate, $RequireGit, $RequireFile, $TimeoutSeconds, $proxySnapshot
+
+        $jobEntries += [PSCustomObject]@{
+            Candidate = $candidate
+            Job       = $job
+        }
+    }
+
+    $results = New-Object System.Collections.Generic.List[object]
+    foreach ($entry in $jobEntries) {
+        $job = $entry.Job
+        $candidate = $entry.Candidate
+        if (Wait-Job $job -Timeout $jobTimeoutLimit) {
+            $jobResult = Receive-Job $job | Select-Object -First 1
+            if ($null -eq $jobResult) {
+                $jobResult = [PSCustomObject]@{
+                    Name       = $candidate.Name
+                    Host       = $candidate.Host
+                    IsOfficial = $candidate.IsOfficial
+                    GitUrl     = $candidate.GitUrl
+                    FileUrl    = $candidate.FileUrl
+                    Success    = $false
+                    GitMs      = $null
+                    FileMs     = $null
+                    ScoreMs    = $null
+                    Error      = "测速任务没有返回结果。"
+                }
+            }
+            $results.Add($jobResult)
+        } else {
+            Stop-Job $job | Out-Null
+            $results.Add([PSCustomObject]@{
+                Name       = $candidate.Name
+                Host       = $candidate.Host
+                IsOfficial = $candidate.IsOfficial
+                GitUrl     = $candidate.GitUrl
+                FileUrl    = $candidate.FileUrl
+                Success    = $false
+                GitMs      = $null
+                FileMs     = $null
+                ScoreMs    = $null
+                Error      = "测速超时。"
+            })
+        }
+        Remove-Job $job -Force
+    }
+
+    return $results.ToArray()
+}
+
+function Format-DownloadCandidateSummary {
+    param(
+        [Parameter(Mandatory=$true)] $Candidate,
+        [bool]$RequireGit,
+        [bool]$RequireFile
+    )
+
+    $parts = @()
+    if ($RequireGit) { $parts += "Git $(Format-ElapsedTime $Candidate.GitMs)" }
+    if ($RequireFile) { $parts += "文件 $(Format-ElapsedTime $Candidate.FileMs)" }
+    if ($RequireGit -and $RequireFile) {
+        $parts += "综合 $(Format-ElapsedTime $Candidate.ScoreMs)"
+    }
+    return ($parts -join " | ")
+}
+
+function Show-DownloadCandidateAddresses {
+    param(
+        [Parameter(Mandatory=$true)] $Candidate,
+        [bool]$RequireGit,
+        [bool]$RequireFile
+    )
+
+    if ($RequireGit -and -not [string]::IsNullOrWhiteSpace($Candidate.GitUrl)) {
+        Write-Host "       Git: $($Candidate.GitUrl)" -ForegroundColor DarkGray
+    }
+    if ($RequireFile -and -not [string]::IsNullOrWhiteSpace($Candidate.FileUrl)) {
+        Write-Host "       文件: $($Candidate.FileUrl)" -ForegroundColor DarkGray
+    }
+}
+
+function Show-DownloadMeasurementSummary {
+    param(
+        [Parameter(Mandatory=$true)] [object[]]$Results,
+        [bool]$RequireGit,
+        [bool]$RequireFile
+    )
+
+    $successfulResults = @($Results | Where-Object { $_.Success } | Sort-Object ScoreMs, Name)
+    $failedResults = @($Results | Where-Object { -not $_.Success } | Sort-Object Name)
+
+    for ($i = 0; $i -lt $successfulResults.Count; $i++) {
+        $result = $successfulResults[$i]
+        Write-Host ("  [{0,2}] {1} - {2}" -f ($i + 1), $result.Name, (Format-DownloadCandidateSummary -Candidate $result -RequireGit:$RequireGit -RequireFile:$RequireFile)) -ForegroundColor Green
+        Show-DownloadCandidateAddresses -Candidate $result -RequireGit:$RequireGit -RequireFile:$RequireFile
+    }
+
+    foreach ($result in $failedResults) {
+        if ($result.Success) {
+            continue
+        }
+        Write-Host "  ✗ $($result.Name)" -ForegroundColor Red
+        Show-DownloadCandidateAddresses -Candidate $result -RequireGit:$RequireGit -RequireFile:$RequireFile
+    }
+    return $successfulResults
+}
+
+function Resolve-DownloadRoute {
+    param(
+        [Parameter(Mandatory=$true)] [string]$OperationName,
+        [string]$GitUrl,
+        [string]$FileUrl
+    )
+
+    $networkProbe = Assert-BasicInternetConnectivity -OperationName $OperationName
+    if (-not $networkProbe) { return $null }
+
+    $requireGit = -not [string]::IsNullOrWhiteSpace($GitUrl)
+    $requireFile = -not [string]::IsNullOrWhiteSpace($FileUrl)
+    $candidates = Get-GitHubDownloadCandidates -GitUrl $GitUrl -FileUrl $FileUrl
+    $officialCandidate = $candidates | Where-Object { $_.IsOfficial } | Select-Object -First 1
+    $mirrorCandidates = @($candidates | Where-Object { -not $_.IsOfficial })
+
+    $googleProbe = Test-GoogleReachability
+    if ($googleProbe.Success) {
+        $successfulTargets = Format-GoogleProbeTargets -Targets $googleProbe.SuccessfulTargets
+        Write-Success "Google 地理位置检测结果：判定为海外 ($($googleProbe.PassedCount)/$($googleProbe.TotalCount)，目标 $successfulTargets，耗时 $(Format-ElapsedTime $googleProbe.ElapsedMs))。"
+        if (Read-YesNoPrompt -Label "使用 GitHub 官方线路" -DefaultYes $true -Note "输入 n 将测速镜像。") {
+            return $officialCandidate
+        }
+    } else {
+        $failedTargets = Format-GoogleProbeTargets -Targets $googleProbe.FailedTargets
+        Write-Warning "Google 地理位置检测结果：判定为中国大陆 ($($googleProbe.PassedCount)/$($googleProbe.TotalCount)，失败目标 $failedTargets)。"
+        Write-Warning "判定：按国内环境直接测速全部镜像。"
+    }
+
+    if ($mirrorCandidates.Count -eq 0) {
+        Write-Error "当前没有可用的 GitHub 镜像配置。"
+        return $null
+    }
+
+    Write-Warning "正在并行测速 $($mirrorCandidates.Count) 条镜像线路，请稍候..."
+    $measuredCandidates = Measure-DownloadCandidates -Candidates $mirrorCandidates -RequireGit:$requireGit -RequireFile:$requireFile
+    $successfulCandidates = @(Show-DownloadMeasurementSummary -Results $measuredCandidates -RequireGit:$requireGit -RequireFile:$requireFile)
+    if ($successfulCandidates.Count -eq 0) {
+        Write-Error "所有镜像线路测速失败。"
+        if ($googleProbe.Success) {
+            Write-Warning "如需改用 GitHub 官方线路，请重新执行本操作。"
+        }
+        return $null
+    }
+
+    $fastestCandidate = $successfulCandidates[0]
+    Write-Success "测速完成，最快线路为：$($fastestCandidate.Name) ($(Format-DownloadCandidateSummary -Candidate $fastestCandidate -RequireGit:$requireGit -RequireFile:$requireFile))"
+    while ($true) {
+        Write-Host "回车使用最快线路，输入编号选择其他线路，0 取消。" -ForegroundColor DarkGray
+        $mirrorChoice = Read-TextPrompt -Label "镜像线路" -Hint "回车/编号/0"
+        if ([string]::IsNullOrWhiteSpace($mirrorChoice)) {
+            return $fastestCandidate
+        }
+        if ($mirrorChoice -eq '0') {
+            return $null
+        }
+        if ($mirrorChoice -match '^\d+$') {
+            $choiceIndex = [int]$mirrorChoice
+            if ($choiceIndex -ge 1 -and $choiceIndex -le $successfulCandidates.Count) {
+                return $successfulCandidates[$choiceIndex - 1]
+            }
+        }
+        Write-Warning "输入无效，请按提示重试。"
+    }
+}
+
+function Write-GitNetworkTroubleshooting {
+    Write-Error "网络连接失败，可能是代理配置问题。"
+    Write-Host "  请检查：" -ForegroundColor Cyan
+    Write-Host "  1. 如果您【需要】使用代理：请确保代理软件已正常运行，并在助手内正确配置代理端口（主菜单 -> 9）。" -ForegroundColor Cyan
+    Write-Host "  2. 如果您【不】使用代理：请检查并清除之前可能设置过的 Git 全局代理。" -ForegroundColor Cyan
+    Write-Host "     (可在任意终端执行命令： git config --global --unset http.proxy 后重试)" -ForegroundColor DarkGray
+}
+
+function Get-AuthenticatedGitHubUrl {
+    param(
+        [Parameter(Mandatory=$true)] [string]$RepoUrl,
+        [Parameter(Mandatory=$true)] [string]$RepoToken
+    )
+
+    if ($RepoUrl -notmatch '^https://github\.com/') { return $null }
+    $repoPath = $RepoUrl -replace '^https://github\.com/', ''
+    return "https://$($RepoToken)@github.com/$repoPath"
+}
+
+function Sanitize-GitOutput {
+    param([string]$Text)
+
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $Text }
+    return ($Text -replace 'https://[^@\s/]+@github\.com/', 'https://***@github.com/')
+}
+
+
+function Run-NpmInstallWithRetry {
+    if (-not (Test-Path $ST_Dir)) { return $false }
+    Set-Location $ST_Dir
+    Write-Warning "正在同步依赖包 (npm install)..."
+    npm install --no-audit --no-fund --omit=dev
+    if ($LASTEXITCODE -eq 0) { Write-Success "依赖包同步完成。"; return $true }
+
+    Write-Warning "依赖包同步失败，将自动清理缓存并重试..."
+    npm cache clean --force --silent
+    npm install --no-audit --no-fund --omit=dev
+    if ($LASTEXITCODE -eq 0) { Write-Success "依赖包重试同步成功。"; return $true }
+
+    Write-Warning "国内镜像安装失败，将切换到NPM官方源进行最后尝试..."
+    try {
+        npm config delete registry
+        npm install --no-audit --no-fund --omit=dev
+        if ($LASTEXITCODE -eq 0) { Write-Success "使用官方源安装依赖成功！"; return $true }
+    } finally {
+        Write-Warning "正在将 NPM 源恢复为国内镜像..."
+        npm config set registry https://registry.npmmirror.com
+    }
+    Write-Error "所有安装尝试均失败。"
+    return $false
+}
+
+function Apply-Proxy {
+    if (Test-Path $ProxyConfigFile) {
+        $port = Get-Content $ProxyConfigFile -ErrorAction SilentlyContinue
+        if (-not [string]::IsNullOrWhiteSpace($port)) {
+            $proxyUrl = "http://127.0.0.1:$port"
+            $env:http_proxy = $proxyUrl
+            $env:https_proxy = $proxyUrl
+            $env:all_proxy = $proxyUrl
+        }
+    } else {
+        Remove-Item env:http_proxy -ErrorAction SilentlyContinue
+        Remove-Item env:https_proxy -ErrorAction SilentlyContinue
+        Remove-Item env:all_proxy -ErrorAction SilentlyContinue
+    }
+}
+
+function Set-Proxy {
+    $portInput = Read-TextPrompt -Label "代理端口" -DefaultValue "7890"
+    try {
+        $portNum = [int]$portInput.Trim()
+        if ($portNum -gt 0 -and $portNum -lt 65536) {
+            Set-Content -Path $ProxyConfigFile -Value $portNum
+            Apply-Proxy
+            Write-Success "代理已设置为: 127.0.0.1:$portNum"
+        } else {
+            Write-Error "请输入 1-65535。"
+        }
+    } catch {
+        Write-Error "请输入 1-65535。"
+    }
+    Press-Any-Key
+}
+
+function Clear-Proxy {
+    if (Test-Path $ProxyConfigFile) {
+        Remove-Item $ProxyConfigFile -Force
+        Apply-Proxy
+        Write-Success "网络代理配置已清除。"
+    } else {
+        Write-Warning "当前未配置任何代理。"
+    }
+    Press-Any-Key
+}
+
+function Show-ManageProxyMenu {
+    while ($true) {
+        Clear-Host
+        Write-Header "管理网络代理"
+        Write-Host "      当前状态: " -NoNewline
+        if (Test-Path $ProxyConfigFile) {
+            Write-Host "127.0.0.1:$(Get-Content $ProxyConfigFile)" -ForegroundColor Green
+        } else {
+            Write-Host "未配置" -ForegroundColor Red
+        }
+        Write-Host "      (此设置仅对咕咕助手内的操作生效，不影响系统全局代理)" -ForegroundColor DarkGray
+        Write-Host "`n      [1] " -NoNewline; Write-Host "设置/修改代理" -ForegroundColor Cyan
+        Write-Host "      [2] " -NoNewline; Write-Host "清除代理" -ForegroundColor Red
+        Write-Host "      [0] " -NoNewline; Write-Host "返回主菜单" -ForegroundColor Cyan
+        $choice = Read-MenuPrompt -Allowed "0-2"
+        switch ($choice) {
+            "1" { Set-Proxy }
+            "2" { Clear-Proxy }
+            "0" { return }
+            default { Write-Warning "输入无效，请按提示重试。"; Start-Sleep -Seconds 1 }
+        }
+    }
+}
+
+function Parse-ConfigFile($filePath) {
+    $config = @{}
+    if (Test-Path $filePath) {
+        Get-Content $filePath | ForEach-Object {
+            $line = $_.Trim()
+            if ($line -and -not $line.StartsWith("#")) {
+                $parts = $line.Split('=', 2)
+                if ($parts.Length -eq 2) {
+                    $key = $parts[0].Trim()
+                    $value = $parts[1].Trim()
+                    if (($value.StartsWith('"') -and $value.EndsWith('"')) -or ($value.StartsWith("'") -and $value.EndsWith("'"))) {
+                        $value = $value.Substring(1, $value.Length - 2)
+                    }
+                    $config[$key] = $value
+                }
+            }
+        }
+    }
+    return $config
+}
+
+function Test-GitSyncDeps {
+    $gitExists = Check-Command "git"
+    $robocopyExists = Check-Command "robocopy"
+    
+    if (-not $gitExists -or -not $robocopyExists) {
+        $missingTools = @()
+        if (-not $gitExists) { $missingTools += "Git" }
+        if (-not $robocopyExists) { $missingTools += "Robocopy" }
+        
+        Write-Warning "检测到以下工具缺失: $($missingTools -join ', ')"
+        Write-Host "  - 如果您刚安装了这些工具，请尝试【重启终端】或【重启电脑】后再试。" -ForegroundColor Cyan
+        Write-Host "  - 如果确认未安装，请先运行主菜单的 [首次部署] 选项。" -ForegroundColor Cyan
+        Press-Any-Key
+        return $false
+    }
+    return $true
+}
+
+function Ensure-GitIdentity {
+    if ([string]::IsNullOrWhiteSpace($(git config --global user.name)) -or [string]::IsNullOrWhiteSpace($(git config --global user.email))) {
+        Clear-Host
+        Write-Header "首次使用Git同步：配置身份"
+        $userName = ""
+        $userEmail = ""
+        while ([string]::IsNullOrWhiteSpace($userName)) { $userName = Read-TextPrompt -Label "Git 用户名" -Required $true }
+        while ([string]::IsNullOrWhiteSpace($userEmail)) { $userEmail = Read-TextPrompt -Label "Git 邮箱" -Required $true }
+        git config --global user.name "$userName"
+        git config --global user.email "$userEmail"
+        Write-Success "Git身份信息已配置成功！"
+        Start-Sleep -Seconds 2
+    }
+    return $true
+}
+
+function Set-GitSyncConfig {
+    Clear-Host
+    Write-Header "配置 Git 同步服务"
+    $repoUrl = ""
+    $repoToken = ""
+    while ([string]::IsNullOrWhiteSpace($repoUrl)) { $repoUrl = Read-TextPrompt -Label "仓库地址" -Required $true }
+    while ([string]::IsNullOrWhiteSpace($repoToken)) { $repoToken = Read-TextPrompt -Label "访问令牌" -Required $true }
+    Set-Content -Path $GitSyncConfigFile -Value "REPO_URL=`"$repoUrl`"`nREPO_TOKEN=`"$repoToken`""
+    Write-Success "Git同步服务配置已保存！"
+    Press-Any-Key
+}
+
+function Backup-ToCloud {
+    Clear-Host
+    Write-Header "备份数据到云端"
+    if (-not (Test-Path $GitSyncConfigFile)) {
+        Write-Warning "请先在菜单 [1] 中配置Git同步服务。"; Press-Any-Key; return
+    }
+
+    $gitConfig = Parse-ConfigFile $GitSyncConfigFile
+    if (-not $gitConfig.ContainsKey("REPO_URL") -or -not $gitConfig.ContainsKey("REPO_TOKEN")) {
+        Write-Error "Git 同步配置不完整。"; Press-Any-Key; return
+    }
+
+    $pushUrl = Get-AuthenticatedGitHubUrl -RepoUrl $gitConfig["REPO_URL"] -RepoToken $gitConfig["REPO_TOKEN"]
+    if (-not $pushUrl) {
+        Write-Error "云端备份独立于发布源，当前仅支持 GitHub HTTPS 私有仓库。"; Press-Any-Key; return
+    }
+
+    if (-not (Assert-GitHubDirectConnectivity -OperationName "云端备份")) {
+        Press-Any-Key
+        return
+    }
+
+    $backupSuccess = $false
+    while (-not $backupSuccess) {
+        $syncRules = Parse-ConfigFile $SyncRulesConfigFile
+        $syncConfigYaml = if ($syncRules.ContainsKey("SYNC_CONFIG_YAML")) { $syncRules["SYNC_CONFIG_YAML"] } else { "false" }
+        $userMap = if ($syncRules.ContainsKey("USER_MAP")) { $syncRules["USER_MAP"] } else { "" }
+        $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
+
+        try {
+            Write-Warning "正在连接 GitHub 私有仓库..."
+            if (-not (Invoke-GitWithProgress -OperationName "从云端克隆仓库" -SanitizeOutput -GitArgs @('-c', 'credential.helper=', 'clone', '--progress', '--depth', '1', $pushUrl, $tempDir))) {
+                Write-Error "从云端克隆仓库失败！Git输出:`n$(Get-GitLastOutputTail -Lines 8)"
+                if (Test-GitLastOutput "Failed to connect to .* port .*|Could not connect to server|Connection timed out|Could not resolve host") {
+                    Write-GitNetworkTroubleshooting
+                }
+            } else {
+                Write-Success "已成功从云端克隆仓库。"
+                Set-Location $tempDir
+                git config core.autocrlf false
+                Write-Warning "正在同步本地数据到临时区..."
+                $recursiveExcludeDirs = @("extensions", "backups")
+                $recursiveExcludeFiles = @("*.log")
+                $robocopyExcludeArgs = @($recursiveExcludeDirs | ForEach-Object { "/XD", $_ }) + @($recursiveExcludeFiles | ForEach-Object { "/XF", $_ })
+
+                $syncFailed = $false
+                if (-not [string]::IsNullOrWhiteSpace($userMap) -and $userMap.Contains(":")) {
+                    $localUser = $userMap.Split(':')[0]
+                    $remoteUser = $userMap.Split(':')[1]
+                    Write-Warning "应用用户映射规则: 本地'$localUser' -> 云端'$remoteUser'"
+                    $localUserPath = Join-Path $ST_Dir "data/$localUser"
+                    if (Test-Path $localUserPath) {
+                        $remoteUserPath = Join-Path $tempDir "data/$remoteUser"
+                        robocopy $localUserPath $remoteUserPath /E /PURGE $robocopyExcludeArgs /R:2 /W:5 /NFL /NDL /NJH /NJS /NP | Out-Null
+                        if ($LASTEXITCODE -ge 8) {
+                            Write-Error "Robocopy 同步 '$localUser' 失败！错误码: $LASTEXITCODE"
+                            $syncFailed = $true
+                        }
+                    } else {
+                        Write-Warning "本地用户文件夹 '$localUser' 不存在，跳过同步。"
+                    }
+                } else {
+                    Get-ChildItem -Path . | Where-Object { $_.Name -ne ".git" } | Remove-Item -Recurse -Force
+                    Write-Warning "应用镜像同步规则: 同步所有本地用户文件夹"
+                    $localUserFolders = Get-UserFolders -baseDataPath (Join-Path $ST_Dir "data")
+                    foreach ($userFolder in $localUserFolders) {
+                        $sourcePath = $userFolder.FullName
+                        $destPath = Join-Path (Join-Path $tempDir "data") $userFolder.Name
+                        robocopy $sourcePath $destPath /E /PURGE $robocopyExcludeArgs /R:2 /W:5 /NFL /NDL /NJH /NJS /NP | Out-Null
+                        if ($LASTEXITCODE -ge 8) {
+                            Write-Error "Robocopy 同步 '$($userFolder.Name)' 失败！错误码: $LASTEXITCODE"
+                            $syncFailed = $true
+                            break
+                        }
+                    }
+                }
+
+                if (-not $syncFailed) {
+                    if ($syncConfigYaml -eq "true" -and (Test-Path (Join-Path $ST_Dir "config.yaml"))) {
+                        Copy-Item (Join-Path $ST_Dir "config.yaml") $tempDir -Force
+                    }
+
+                    Set-Location $tempDir
+                    git add .
+                    if ($(git status --porcelain).Length -eq 0) {
+                        Write-Success "数据与云端一致，无需上传。"
+                        $backupSuccess = $true
+                    } else {
+                        Write-Warning "正在提交数据变更..."
+                        $commitMessage = "💻 Windows 推送: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+                        $commitOutput = git commit -m $commitMessage -q 2>&1
+                        if ($LASTEXITCODE -ne 0) {
+                            Write-Error "Git 提交失败！输出: $($commitOutput | Out-String)"
+                        } else {
+                            Write-Warning "正在上传到 GitHub..."
+                            if (-not (Invoke-GitWithProgress -OperationName "上传到 GitHub" -SanitizeOutput -GitArgs @('-c', 'credential.helper=', 'push', '--progress'))) {
+                                Write-Error "上传失败！Git输出:`n$(Get-GitLastOutputTail -Lines 8)"
+                                if (Test-GitLastOutput "Failed to connect to .* port .*|Could not connect to server|Connection timed out|Could not resolve host") {
+                                    Write-GitNetworkTroubleshooting
+                                }
+                            } else {
+                                Write-Success "数据成功备份到云端！"
+                                $backupSuccess = $true
+                            }
+                        }
+                    }
+                }
+            }
+        } finally {
+            Set-Location $ScriptBaseDir
+            if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force }
+        }
+
+        if (-not $backupSuccess) {
+            if (-not (Read-YesNoPrompt -Label "备份失败，是否重试" -DefaultYes $true)) {
+                Write-Warning "操作已取消。"
+                break
+            }
+        }
+    }
+    Press-Any-Key
+}
+
+function Restore-FromCloud {
+    Clear-Host
+    Write-Header "从云端恢复数据"
+    if (-not (Test-Path $GitSyncConfigFile)) {
+        Write-Warning "请先在菜单 [1] 中配置Git同步服务。"; Press-Any-Key; return
+    }
+    Write-Warning "此操作将用云端数据【覆盖】本地数据！"
+    if (Read-YesNoPrompt -Label "恢复前先创建本地备份" -DefaultYes $true -Note "强烈推荐。") {
+        if (-not (New-LocalZipBackup -BackupType "恢复前")) {
+            Write-Error "本地备份失败，恢复操作已中止。"; Press-Any-Key; return
+        }
+    }
+    if (-not (Read-YesNoPrompt -Label "从云端恢复并覆盖本地数据" -DefaultYes $false)) {
+        Write-Warning "操作已取消。"; Press-Any-Key; return
+    }
+
+    $syncRules = Parse-ConfigFile $SyncRulesConfigFile
+    $syncConfigYaml = if ($syncRules.ContainsKey("SYNC_CONFIG_YAML")) { $syncRules["SYNC_CONFIG_YAML"] } else { "false" }
+    $userMap = if ($syncRules.ContainsKey("USER_MAP")) { $syncRules["USER_MAP"] } else { "" }
+    $gitConfig = Parse-ConfigFile $GitSyncConfigFile
+    if (-not $gitConfig.ContainsKey("REPO_URL") -or -not $gitConfig.ContainsKey("REPO_TOKEN")) {
+        Write-Error "Git 同步配置不完整。"; Press-Any-Key; return
+    }
+
+    $pullUrl = Get-AuthenticatedGitHubUrl -RepoUrl $gitConfig["REPO_URL"] -RepoToken $gitConfig["REPO_TOKEN"]
+    if (-not $pullUrl) {
+        Write-Error "云端恢复独立于发布源，当前仅支持 GitHub HTTPS 私有仓库。"; Press-Any-Key; return
+    }
+
+    if (-not (Assert-GitHubDirectConnectivity -OperationName "云端恢复")) {
+        Press-Any-Key
+        return
+    }
+
+    $cloneSuccess = $false
+    $tempDir = $null
+    while (-not $cloneSuccess) {
+        $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
+        try {
+            Write-Warning "正在从 GitHub 私有仓库下载备份..."
+            if (Invoke-GitWithProgress -OperationName "从云端下载备份仓库" -SanitizeOutput -GitArgs @('-c', 'credential.helper=', 'clone', '--progress', '--depth', '1', $pullUrl, $tempDir)) {
+                $cloneSuccess = $true
+            } else {
+                Write-Error "恢复失败！Git输出:`n$(Get-GitLastOutputTail -Lines 8)"
+                if (Test-GitLastOutput "Failed to connect to .* port .*|Could not connect to server|Connection timed out|Could not resolve host") {
+                    Write-GitNetworkTroubleshooting
+                }
+            }
+        } finally {
+            if (-not $cloneSuccess -and (Test-Path $tempDir)) {
+                Remove-Item $tempDir -Recurse -Force
+                $tempDir = $null
+            }
+        }
+
+        if (-not $cloneSuccess) {
+            if (-not (Read-YesNoPrompt -Label "恢复失败，是否重试" -DefaultYes $true)) {
+                Write-Warning "操作已取消。"
+                Press-Any-Key
+                return
+            }
+        }
+    }
+
+    try {
+        Write-Success "已成功从云端下载数据。"
+        if (-not (Get-ChildItem $tempDir)) { Write-Error "下载的数据源无效或为空，恢复操作已中止！"; return }
+        Write-Warning "正在将云端数据同步到本地..."
+        $recursiveExcludeDirs = @("extensions", "backups")
+        $recursiveExcludeFiles = @("*.log")
+        $robocopyExcludeArgs = @($recursiveExcludeDirs | ForEach-Object { "/XD", $_ }) + @($recursiveExcludeFiles | ForEach-Object { "/XF", $_ })
+        if (-not [string]::IsNullOrWhiteSpace($userMap) -and $userMap.Contains(":")) {
+            $localUser = $userMap.Split(':')[0]; $remoteUser = $userMap.Split(':')[1]
+            Write-Warning "应用用户映射规则: 云端'$remoteUser' -> 本地'$localUser'"
+            $remoteUserPath = Join-Path $tempDir "data/$remoteUser"
+            if (Test-Path $remoteUserPath) {
+                $localUserPath = Join-Path $ST_Dir "data/$localUser"
+                robocopy $remoteUserPath $localUserPath /E /PURGE $robocopyExcludeArgs /R:2 /W:5 /NFL /NDL /NJH /NJS /NP | Out-Null
+                if ($LASTEXITCODE -ge 8) { Write-Error "Robocopy 恢复 '$localUser' 失败！错误码: $LASTEXITCODE"; return }
+            } else { Write-Warning "云端映射文件夹 'data\$remoteUser' 不存在，跳过映射同步。" }
+        } else {
+            Write-Warning "应用镜像同步规则: 恢复所有云端用户文件夹"
+            $sourceDataPath = Join-Path $tempDir "data"; $destDataPath = Join-Path $ST_Dir "data"
+            $remoteUserFolders = Get-UserFolders -baseDataPath $sourceDataPath
+            $localUserFolders = Get-UserFolders -baseDataPath $destDataPath
+            $finalRemoteNames = $remoteUserFolders | ForEach-Object { $_.Name }
+            foreach ($localUser in $localUserFolders) {
+                if ($finalRemoteNames -notcontains $localUser.Name) {
+                    Write-Warning "清理本地多余的用户: $($localUser.Name)"; Remove-Item $localUser.FullName -Recurse -Force
+                }
+            }
+            foreach ($remoteUser in $remoteUserFolders) {
+                $sourcePath = $remoteUser.FullName; $destPath = Join-Path $destDataPath $remoteUser.Name
+                robocopy $sourcePath $destPath /E /PURGE $robocopyExcludeArgs /R:2 /W:5 /NFL /NDL /NJH /NJS /NP | Out-Null
+                if ($LASTEXITCODE -ge 8) { Write-Error "Robocopy 恢复 '$($remoteUser.Name)' 失败！错误码: $LASTEXITCODE"; return }
+            }
+        }
+        if ($syncConfigYaml -eq "true" -and (Test-Path (Join-Path $tempDir "config.yaml"))) {
+            Copy-Item (Join-Path $tempDir "config.yaml") $ST_Dir -Force
+        }
+        Write-Host ""
+        Write-Success "数据已从云端成功恢复！"
+    } finally {
+        if (Test-Path $tempDir){ Remove-Item $tempDir -Recurse -Force }
+    }
+    Press-Any-Key
+}
+
+function Clear-GitSyncConfig {
+    if (Test-Path $GitSyncConfigFile) {
+        if (Read-YesNoPrompt -Label "清除已保存的 Git 同步配置" -DefaultYes $false) {
+            Remove-Item $GitSyncConfigFile -Force
+            Write-Success "Git同步配置已清除。"
+        } else {
+            Write-Warning "操作已取消。"
+        }
+    } else {
+        Write-Warning "未找到任何Git同步配置。"
+    }
+    Press-Any-Key
+}
+
+function Show-ManageGitConfigMenu {
+    while ($true) {
+        Clear-Host
+        Write-Header "管理同步配置"
+        Write-Host "      [1] " -NoNewline; Write-Host "修改/设置同步信息" -ForegroundColor Cyan
+        Write-Host "      [2] " -NoNewline; Write-Host "清除所有同步配置" -ForegroundColor Red
+        Write-Host "      [0] " -NoNewline; Write-Host "返回上一级" -ForegroundColor Cyan
+        $choice = Read-MenuPrompt -Allowed "0-2"
+        switch ($choice) {
+            "1" { Set-GitSyncConfig }
+            "2" { Clear-GitSyncConfig }
+            "0" { return }
+            default { Write-Warning "输入无效，请按提示重试。"; Start-Sleep 1 }
+        }
+    }
+}
+
+function Update-SyncRuleValue($key, $value, $file) {
+    $config = Parse-ConfigFile $file
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        $config.Remove($key) | Out-Null
+    } else {
+        $config[$key] = $value
+    }
+    $newContent = $config.GetEnumerator() | Sort-Object Name | ForEach-Object { "$($_.Name)=`"$($_.Value)`"" }
+    Set-Content -Path $file -Value $newContent -Encoding utf8
+}
+
+function Show-AdvancedSyncSettingsMenu {
+    while ($true) {
+        Clear-Host
+        Write-Header "高级同步设置"
+        $rules = Parse-ConfigFile $SyncRulesConfigFile
+        Write-Host "  [1] 同步 config.yaml         : " -NoNewline
+        if ($rules["SYNC_CONFIG_YAML"] -eq "true") { Write-Host "开启" -F Green } else { Write-Host "关闭" -F Red }
+        Write-Host "  [2] 设置用户数据映射        : " -NoNewline
+        if ($rules.ContainsKey("USER_MAP") -and -not [string]::IsNullOrWhiteSpace($rules["USER_MAP"])) {
+            $localUser = $rules["USER_MAP"].Split(':')[0]
+            $remoteUser = $rules["USER_MAP"].Split(':')[1]
+            Write-Host "本地 $localUser -> 云端 $remoteUser" -F Green
+        } else {
+            Write-Host "未设置 (将同步所有用户)" -F Red
+        }
+        Write-Host "`n  [3] " -NoNewline; Write-Host "重置所有高级设置" -F Red
+        Write-Host "  [0] " -NoNewline; Write-Host "返回上一级" -F Cyan
+        $choice = Read-MenuPrompt -Allowed "0-3"
+        switch ($choice) {
+            "1" {
+                $newStatus = if ($rules["SYNC_CONFIG_YAML"] -eq "true") { "false" } else { "true" }
+                Update-SyncRuleValue "SYNC_CONFIG_YAML" $newStatus $SyncRulesConfigFile
+                Write-Success "config.yaml 同步已变更为: $newStatus"; Start-Sleep 1
+            }
+            "2" {
+                $local_u = Read-TextPrompt -Label "本地用户目录" -DefaultValue "default-user"
+                $remote_u = Read-TextPrompt -Label "云端用户目录" -DefaultValue "default-user"
+                Update-SyncRuleValue "USER_MAP" "$($local_u):$($remote_u)" $SyncRulesConfigFile
+                Write-Success "用户映射已设置为: $local_u -> $remote_u"; Start-Sleep 1.5
+            }
+            "3" {
+                if (Test-Path $SyncRulesConfigFile) {
+                    Remove-Item $SyncRulesConfigFile -Force
+                    Write-Success "所有高级同步设置已重置。"
+                } else {
+                    Write-Warning "没有需要重置的设置。"
+                }
+                Start-Sleep 1.5
+            }
+            "0" { return }
+            default { Write-Warning "输入无效，请按提示重试。"; Start-Sleep 1 }
+        }
+    }
+}
+
+function Show-GitSyncMenu {
+    while ($true) {
+        Clear-Host
+        Write-Header "数据同步 (Git 方案)"
+        if (-not (Test-Path (Join-Path $ST_Dir "start.bat"))) {
+            Write-Warning "酒馆尚未安装，无法使用数据同步功能。`n请先返回主菜单选择 [首次部署]。"
+            Press-Any-Key
+            return
+        }
+        if (-not (Test-GitSyncDeps)) { return }
+        if (-not (Ensure-GitIdentity)) { return }
+        Clear-Host
+        Write-Header "数据同步 (Git 方案)"
+        $gitConfig = Parse-ConfigFile $GitSyncConfigFile
+        if ($gitConfig.ContainsKey("REPO_URL")) {
+            $currentRepoName = [System.IO.Path]::GetFileNameWithoutExtension($gitConfig["REPO_URL"])
+            Write-Host "      " -NoNewline; Write-Host "当前仓库: $currentRepoName" -F Yellow
+            Write-Host ""
+        }
+        Write-Host "`n      [1] " -NoNewline; Write-Host "管理同步配置 (仓库地址/令牌)" -F Cyan
+        Write-Host "      [2] " -NoNewline; Write-Host "备份数据 (上传至云端)" -F Green
+        Write-Host "      [3] " -NoNewline; Write-Host "恢复数据 (从云端下载)" -F Yellow
+        Write-Host "      [4] " -NoNewline; Write-Host "高级同步设置 (用户映射等)" -F Cyan
+        Write-Host "      [5] " -NoNewline; Write-Host "导出扩展链接" -F Cyan
+        Write-Host "`n      [0] " -NoNewline; Write-Host "返回主菜单" -F Cyan
+        $choice = Read-MenuPrompt -Allowed "0-5"
+        switch ($choice) {
+            "1" { Show-ManageGitConfigMenu }
+            "2" { Backup-ToCloud }
+            "3" { Restore-FromCloud }
+            "4" { Show-AdvancedSyncSettingsMenu }
+            "5" { Export-ExtensionLinks }
+            "0" { return }
+            default { Write-Warning "输入无效，请按提示重试。"; Start-Sleep 1 }
+        }
+    }
+}
+
+function Export-ExtensionLinks {
+    Clear-Host
+    Write-Header "导出扩展链接"
+    $allLinks = [System.Collections.Generic.List[string]]::new()
+    $outputContent = [System.Text.StringBuilder]::new()
+
+    function Get-RepoUrlFromPath($path) {
+        if (Test-Path (Join-Path $path ".git")) {
+            $url = (Invoke-Command -ScriptBlock {
+                param($p)
+                Set-Location -Path $p
+                git config --get remote.origin.url
+            } -ArgumentList $path)
+            return $url.Trim()
+        }
+        return $null
+    }
+
+    $globalExtPath = Join-Path $ST_Dir "public/scripts/extensions/third-party"
+    if (Test-Path $globalExtPath) {
+        $globalDirs = Get-ChildItem -Path $globalExtPath -Directory -ErrorAction SilentlyContinue
+        if ($globalDirs) {
+            $outputContent.AppendLine("═══ 全局扩展 ═══") | Out-Null
+            foreach ($dir in $globalDirs) {
+                $repoUrl = Get-RepoUrlFromPath $dir.FullName
+                if (-not [string]::IsNullOrWhiteSpace($repoUrl)) {
+                    $outputContent.AppendLine($repoUrl) | Out-Null
+                    $allLinks.Add($repoUrl)
+                }
+            }
+        }
+    }
+
+    $dataPath = Join-Path $ST_Dir "data"
+    if (Test-Path $dataPath) {
+        $userDirs = Get-ChildItem -Path $dataPath -Directory -ErrorAction SilentlyContinue
+        foreach ($userDir in $userDirs) {
+            $userExtPath = Join-Path $userDir.FullName "extensions"
+            if (Test-Path $userExtPath) {
+                $userExtDirs = Get-ChildItem -Path $userExtPath -Directory -ErrorAction SilentlyContinue
+                if ($userExtDirs) {
+                    $userLinks = [System.Collections.Generic.List[string]]::new()
+                    foreach ($extDir in $userExtDirs) {
+                        $repoUrl = Get-RepoUrlFromPath $extDir.FullName
+                        if (-not [string]::IsNullOrWhiteSpace($repoUrl)) {
+                            $userLinks.Add($repoUrl)
+                            $allLinks.Add($repoUrl)
+                        }
+                    }
+                    if ($userLinks.Count -gt 0) {
+                        $outputContent.AppendLine() | Out-Null
+                        $outputContent.AppendLine("═══ 用户 [$($userDir.Name)] 的扩展 ═══") | Out-Null
+                        $userLinks | ForEach-Object { $outputContent.AppendLine($_) | Out-Null }
+                    }
+                }
+            }
+        }
+    }
+
+    if ($allLinks.Count -eq 0) {
+        Write-Warning "未找到任何已安装的Git扩展。"
+    } else {
+        Write-Host $outputContent.ToString()
+        if (Read-YesNoPrompt -Label "保存到桌面" -DefaultYes $false) {
+            try {
+                $desktopPath = [System.Environment]::GetFolderPath('Desktop')
+                $fileName = "ST_扩展链接_$(Get-Date -Format 'yyyy-MM-dd').txt"
+                $filePath = Join-Path $desktopPath $fileName
+                Set-Content -Path $filePath -Value $outputContent.ToString() -Encoding UTF8
+                Write-Success "链接已成功保存到桌面: $fileName"
+            } catch {
+                Write-Error "保存失败: $($_.Exception.Message)"
+            }
+        }
+    }
+    Press-Any-Key
+}
+
+function Start-SillyTavern {
+    Clear-Host
+    Write-Header "启动酒馆"
+
+    $labConfig = Parse-ConfigFile $LabConfigFile
+    if ($labConfig.ContainsKey("AUTO_START_GCLI") -and $labConfig["AUTO_START_GCLI"] -eq "true") {
+        if (Test-Path $GcliDir) {
+            if ((Get-Gcli2ApiStatus) -ne "运行中") {
+                Write-Host "[gcli2api] 检测到自动启动已开启，正在新窗口中启动服务..." -ForegroundColor DarkGray
+                if (Start-Gcli2ApiService) {
+                    Start-Sleep -Seconds 1
+                } else {
+                    Start-Sleep -Seconds 2
+                }
+            }
+        } else {
+            Write-Warning "[警告] gcli2api 目录不存在，无法自动启动。"
+        }
+    }
+
+    if (-not (Test-Path (Join-Path $ST_Dir "start.bat"))) {
+        Write-Warning "酒馆尚未安装，请先部署。"
+        Press-Any-Key
+        return
+    }
+
+    $currentMode = Get-STCurrentMode
+    if ($currentMode -eq "luker") {
+        Write-Warning "提示：当前酒馆目录正处于【Luker 模式】分支！"
+        Write-Host "您当前启动的是 Luker。如需切换回原版酒馆，请使用主菜单 [14] 切换模式。`n" -ForegroundColor Cyan
+        if (-not (Read-YesNoPrompt -Label "是否继续启动 Luker" -DefaultYes $true)) {
+            Write-Warning "已取消启动。"
+            Press-Any-Key
+            return
+        }
+    }
+    
+    Check-PortAndShowError -SillyTavernPath $ST_Dir
+
+    Set-Location $ST_Dir
+    Write-Host "正在配置NPM镜像并准备启动环境..."
+    npm config set registry https://registry.npmmirror.com
+    
+    $startBatPath = Join-Path $ST_Dir "start.bat"
+    Write-Success "环境准备就绪，即将在新窗口中启动酒馆服务..."
+    Write-Warning "首次启动或更新后会自动安装依赖，耗时可能较长，请耐心等待..."
+    Write-Host "酒馆将在新窗口中运行，请勿关闭该窗口。" -ForegroundColor Cyan
+    Write-Host "如需停止服务，请直接关闭酒馆运行窗口。" -ForegroundColor Cyan
+    
+    Start-Sleep -Seconds 2
+    
+    Start-Process -FilePath $startBatPath -WorkingDirectory $ST_Dir
+    
+    Write-Success "酒馆已在新窗口中启动！"
+    Write-Host "提示：酒馆服务将在新窗口中运行，请保持该窗口开启。" -ForegroundColor Green
+    Write-Host "      本助手窗口现在可以关闭，或按任意键返回主菜单。" -ForegroundColor Cyan
+    Press-Any-Key
+}
+
+function Install-SillyTavern {
+    param([bool]$autoStart = $true)
+    Clear-Host
+    Write-Header "酒馆部署向导"
+
+    Write-Header "1/3: 检查核心依赖"
+    if (-not (Check-Command "git") -or -not (Check-Command "node")) {
+        Write-Warning "错误: Git 或 Node.js 未安装。即将为您展示帮助文档..."
+        Start-Sleep -Seconds 3; Open-HelpDocs; return
+    }
+    Write-Success "核心依赖 (Git, Node.js) 已找到。"
+
+    Write-Header "2/3: 下载酒馆主程序"
+    if (Test-Path $ST_Dir) {
+        Write-Warning "目录 $ST_Dir 已存在，跳过下载。"
+    } else {
+        $selectedRoute = Resolve-DownloadRoute -OperationName "下载酒馆主程序" -GitUrl "https://github.com/SillyTavern/SillyTavern.git"
+        if (-not $selectedRoute) {
+            Write-Error "未能选定可用下载线路。"
+            Press-Any-Key
+            return
+        }
+
+        Write-Warning "正在使用线路 [$($selectedRoute.Host)] 下载 ($Repo_Branch 分支)..."
+        if (-not (Invoke-GitWithProgress -OperationName "下载酒馆主程序" -GitArgs @('-c', 'credential.helper=', 'clone', '--progress', '--depth', '1', '-b', $Repo_Branch, $selectedRoute.GitUrl, $ST_Dir))) {
+            if (Test-GitLastOutput "Permission denied") {
+                Write-Error "权限不足，无法创建目录。请尝试以【管理员身份】运行本脚本。"
+                Press-Any-Key
+                exit
+            }
+            if (Test-GitLastOutput "Failed to connect to .* port .*|Could not connect to server|Connection timed out|Could not resolve host") {
+                Write-GitNetworkTroubleshooting
+            }
+            Write-Error "下载失败！Git输出:`n$(Get-GitLastOutputTail -Lines 8)"
+            if (Test-Path $ST_Dir) { Remove-Item -Recurse -Force $ST_Dir }
+            Press-Any-Key
+            return
+        }
+        Write-Success "主程序下载完成。"
+    }
+
+    Write-Header "3/3: 配置 NPM 环境并安装依赖"
+    if (Test-Path $ST_Dir) {
+        if (-not (Run-NpmInstallWithRetry)) { Write-ErrorExit "依赖安装最终失败，部署中断。" }
+    } else { Write-Warning "酒馆目录不存在，跳过此步。" }
+
+    if ($autoStart) {
+        Write-Host "`n"; Write-Success "部署完成！"; Write-Warning "即将进行首次启动..."; Start-Sleep -Seconds 3; Start-SillyTavern
+    } else { Write-Success "全新版本下载与配置完成。" }
+}
+
+function New-LocalZipBackup {
+    param([string]$BackupType, [string[]]$PathsToBackup)
+    if (-not (Test-Path $ST_Dir)) {
+        Write-Error "酒馆目录不存在，无法创建本地备份。"
+        return $null
+    }
+    if ($null -eq $PathsToBackup) {
+        $defaultPaths = @("data", "public/scripts/extensions/third-party", "plugins", "config.yaml")
+        $PathsToBackup = if (Test-Path $BackupPrefsConfigFile) { Get-Content $BackupPrefsConfigFile } else { $defaultPaths }
+    }
+    if (-not (Test-Path $Backup_Root_Dir)) { New-Item -Path $Backup_Root_Dir -ItemType Directory | Out-Null }
+
+    $allBackups = Get-ChildItem -Path $Backup_Root_Dir -Filter "*.zip" | Sort-Object CreationTime
+    $currentBackupCount = $allBackups.Count
+    Write-Host ""
+    Write-Host "当前本地备份数: $currentBackupCount/$Backup_Limit" -ForegroundColor Yellow
+    if ($currentBackupCount -ge $Backup_Limit) {
+        $oldestBackup = $allBackups[0]
+        Write-Warning "警告：本地备份已达上限 ($Backup_Limit/$Backup_Limit)。"
+        Write-Host "创建新备份将会自动删除最旧的一个备份文件:"
+        Write-Host "  - " -NoNewline; Write-Host "将被删除: $($oldestBackup.Name)" -ForegroundColor Red
+        if (-not (Read-YesNoPrompt -Label "继续创建本地备份" -DefaultYes $false)) { Write-Warning "操作已取消。"; return $null }
+    }
+
+    $timestamp = Get-Date -Format "yyyy-MM-dd_HH-mm"
+    $backupName = "ST_备份_$($BackupType)_$($timestamp).zip"
+    $backupZipPath = Join-Path $Backup_Root_Dir $backupName
+    Write-Warning "正在创建“$($BackupType)”类型的本地备份..."
+    $stagingDir = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
+    New-Item -Path $stagingDir -ItemType Directory | Out-Null
+    try {
+        $hasFiles = $false
+        foreach ($item in $PathsToBackup) {
+            $sourcePath = Join-Path $ST_Dir $item
+            if (-not (Test-Path $sourcePath)) { continue }
+            $hasFiles = $true
+            if (Test-Path $sourcePath -PathType Container) {
+                $destPath = Join-Path $stagingDir $item
+                robocopy $sourcePath $destPath /E /XD "_cache" "backups" /XF "*.log" /NFL /NDL /NJH /NJS /NP /R:2 /W:5 | Out-Null
+            } else {
+                Copy-Item -Path $sourcePath -Destination $stagingDir -Force
+            }
+        }
+        if (-not $hasFiles) { Write-Error "未能收集到任何有效文件进行本地备份。"; return $null }
+        Compress-Archive -Path (Join-Path $stagingDir "*") -DestinationPath $backupZipPath -Force -ErrorAction Stop
+        if ($currentBackupCount -ge $Backup_Limit) {
+            Write-Warning "正在清理旧备份..."
+            Remove-Item $oldestBackup.FullName
+            Write-Host "  - 已删除: $($oldestBackup.Name)"
+        }
+        $newAllBackups = Get-ChildItem -Path $Backup_Root_Dir -Filter "*.zip"
+        Write-Success "本地备份成功：$backupName (当前: $($newAllBackups.Count)/$Backup_Limit)"
+        Write-Host "  " -NoNewline; Write-Host "保存路径: $backupZipPath" -F Cyan
+        return $backupZipPath
+    } catch {
+        Write-Error "创建本地 .zip 备份失败！错误信息: $($_.Exception.Message)"
+        return $null
+    } finally {
+        if (Test-Path $stagingDir) { Remove-Item -Path $stagingDir -Recurse -Force }
+    }
+}
+
+function Update-SillyTavern {
+    Clear-Host
+    Write-Header "更新酒馆"
+    if (-not (Test-Path (Join-Path $ST_Dir ".git"))) {
+        Write-Warning "未找到Git仓库，请先完整部署。"; Press-Any-Key; return
+    }
+
+    $selectedRoute = Resolve-DownloadRoute -OperationName "更新酒馆" -GitUrl "https://github.com/SillyTavern/SillyTavern.git"
+    if (-not $selectedRoute) {
+        Write-Error "未能选定可用更新线路。"
+        Press-Any-Key
+        return
+    }
+
+    $updateSuccess = $false
+    Set-Location $ST_Dir
+    $pullSucceeded = $false
+    Write-Warning "正在尝试使用线路 [$($selectedRoute.Host)] 更新..."
+    git remote set-url origin $selectedRoute.GitUrl
+
+    $repoIssues = @(Get-GitRepoIssueSummary)
+    if ($repoIssues.Count -gt 0) {
+        Clear-Host
+        Write-Header "检测到仓库残留状态"
+        Write-Host "`n--- 检测结果 ---`n$($repoIssues -join "`n")`n--------------"
+        Write-Host "这通常是上次更新/切换中断遗留，并非您的操作错误。" -ForegroundColor Cyan
+        if (Read-YesNoPrompt -Label "是否先执行一键自愈再继续更新（推荐）" -DefaultYes $true) {
+            if (Invoke-GitWorkspaceAutoRepair -Branch $Repo_Branch) {
+                Write-Success "仓库自愈完成，继续更新。"
+            } else {
+                Write-Error "一键自愈失败，请重试或切换网络后再试。"
+                Set-Location $ScriptBaseDir
+                Press-Any-Key
+                return
+            }
+        }
+    }
+
+    if (Invoke-GitWithProgress -OperationName "拉取酒馆更新" -GitArgs @('-c', 'credential.helper=', 'pull', '--progress', 'origin', $Repo_Branch, '--allow-unrelated-histories', '--no-rebase')) {
+        if (Test-GitLastOutput "Already up to date") { Write-Success "代码已是最新，无需更新。" } else { Write-Success "代码更新成功。" }
+        $pullSucceeded = $true
+    } elseif (Test-GitLastOutput "Your local changes to the following files would be overwritten|conflict|error: Pulling is not possible because you have unmerged files\.|divergent branches|reconcile|index\.lock|You have not concluded your merge|rebase|cherry-pick") {
+        Clear-Host
+        Write-Header "检测到更新冲突"
+
+        $reason = "检测到程序目录与目标版本存在差异，无法直接自动合并。"
+        $actionDesc = "重置程序目录差异"
+
+        $unmergedPreview = Get-GitUnmergedFilesPreview -Lines 8
+        if (-not [string]::IsNullOrWhiteSpace($unmergedPreview)) {
+            $reason = "检测到未解决冲突文件（通常是上次更新中断遗留）。"
+            $actionDesc = "清理未解决冲突并同步代码"
+        } elseif (Test-GitLastOutput "package-lock\.json") {
+            $reason = "依赖配置文件 (package-lock.json) 差异，这是系统自动行为。"
+            $actionDesc = "重置依赖配置文件"
+        } elseif (Test-GitLastOutput "yarn\.lock|pnpm-lock\.yaml|npm-shrinkwrap\.json") {
+            $reason = "检测到依赖锁文件差异，这是常见自动行为。"
+            $actionDesc = "重置依赖锁文件"
+        } elseif (Test-GitLastOutput "divergent branches|reconcile") {
+            $reason = "本地版本与远程版本存在分叉（通常是由于非正常的更新中断引起）。"
+            $actionDesc = "同步版本状态并清理环境"
+        } elseif (Test-GitLastOutput "index\.lock") {
+            $reason = "Git 环境被锁定（可能有其他 Git 进程正在运行或上次操作异常中断）。"
+            $actionDesc = "解除锁定并清理环境"
+        } elseif (Test-GitLastOutput "You have not concluded your merge|rebase|cherry-pick") {
+            $reason = "检测到未完成的 Git 操作（merge/rebase/cherry-pick）。"
+            $actionDesc = "终止未完成操作并恢复仓库状态"
+        } elseif (Test-GitLastOutput "conflict|unmerged files") {
+            $reason = "代码合并时发生冲突。"
+            $actionDesc = "放弃冲突的修改并清理环境"
+        }
+
+        Write-Warning "原因: $reason"
+        $preview = if (-not [string]::IsNullOrWhiteSpace($unmergedPreview)) { $unmergedPreview } else { Get-GitConflictPreview -Lines 8 }
+        if (-not [string]::IsNullOrWhiteSpace($preview)) {
+            Write-Host "`n--- 冲突对象（来自 Git 输出） ---`n$preview`n------------------------------"
+        }
+        Write-Host "`n此操作将$($actionDesc)，【不会】影响您的聊天记录、角色卡等用户数据。" -ForegroundColor Cyan
+        if (-not [string]::IsNullOrWhiteSpace($unmergedPreview)) {
+            Write-Host "这是更新中断后的常见状态，确认后脚本会自动清理并恢复到可更新状态。" -ForegroundColor Cyan
+        } else {
+            Write-Host "若上方包含 package-lock / yarn.lock / pnpm-lock.yaml，通常可放心确认继续。" -ForegroundColor Cyan
+        }
+        if (-not (Read-YesNoPrompt -Label "是否执行修复以完成更新" -DefaultYes $true)) {
+            Write-Warning "操作已取消。"; Set-Location $ScriptBaseDir; Press-Any-Key; return
+        }
+
+        Write-Warning "正在执行一键深度修复并重试更新..."
+        if (Invoke-GitWorkspaceAutoRepair -Branch $Repo_Branch -DeepClean) {
+            if (Invoke-GitWithProgress -OperationName "重新拉取酒馆更新" -GitArgs @('-c', 'credential.helper=', 'pull', '--progress', 'origin', $Repo_Branch, '--allow-unrelated-histories', '--no-rebase')) {
+                Write-Success "强制更新成功。"
+                $pullSucceeded = $true
+            } else {
+                Write-Error "强制更新失败！"
+            }
+        } else {
+            Write-Error "深度修复失败！"
+        }
+    } else {
+        if (Test-GitLastOutput "Permission denied") {
+            Write-Error "权限不足，无法写入文件。请尝试以【管理员身份】运行本脚本。"
+            Set-Location $ScriptBaseDir
+            Press-Any-Key
+            return
+        }
+        if (Test-GitLastOutput "Failed to connect to .* port .*|Could not connect to server|Connection timed out|Could not resolve host") {
+            Write-GitNetworkTroubleshooting
+        }
+        Write-Error "更新失败！Git输出:`n$(Get-GitLastOutputTail -Lines 8)"
+    }
+
+    if ($pullSucceeded) {
+        if (Run-NpmInstallWithRetry) { $updateSuccess = $true }
+    }
+    Set-Location $ScriptBaseDir
+    if ($updateSuccess) { Write-Success "酒馆更新完成！" }
+    Press-Any-Key
+}
+
+function Rollback-SillyTavern {
+    Clear-Host
+    Write-Header "回退酒馆版本"
+    if (-not (Test-Path (Join-Path $ST_Dir ".git"))) {
+        Write-Warning "未找到Git仓库，请先完整部署。"; Press-Any-Key; return
+    }
+
+    Set-Location $ST_Dir
+    Write-Warning "正在从远程仓库获取所有版本信息..."
+
+    $selectedRoute = Resolve-DownloadRoute -OperationName "获取版本列表" -GitUrl "https://github.com/SillyTavern/SillyTavern.git"
+    if (-not $selectedRoute) {
+        Write-Error "未能选定可用线路。"
+        Set-Location $ScriptBaseDir
+        Press-Any-Key
+        return
+    }
+
+    Write-Warning "正在尝试使用线路 [$($selectedRoute.Host)] 获取版本列表..."
+    git remote set-url origin $selectedRoute.GitUrl
+    if (Test-Path ".git/index.lock") { Remove-Item ".git/index.lock" -Force }
+    if (-not (Invoke-GitWithProgress -OperationName "获取版本标签" -GitArgs @('-c', 'credential.helper=', 'fetch', '--progress', '--all', '--tags'))) {
+        if (Test-GitLastOutput "Failed to connect to .* port .*|Could not connect to server|Connection timed out|Could not resolve host") {
+            Write-GitNetworkTroubleshooting
+        }
+        Write-Error "获取版本信息失败！Git输出:`n$(Get-GitLastOutputTail -Lines 8)"
+        Set-Location $ScriptBaseDir
+        Press-Any-Key
+        return
+    }
+
+    Write-Host ""
+    Write-Success "版本信息获取成功。"
+    $allTags = git tag --sort=-v:refname | Where-Object { $_ -match '^\d' }
+    if ($allTags.Count -eq 0) {
+        Write-Error "未能获取到任何有效的版本标签。"; Press-Any-Key; return
+    }
+
+    $currentPage = 0
+    $pageSize = 15
+    $filter = ""
+    while ($true) {
+        Clear-Host
+        Write-Header "选择要回退的版本"
+        $filteredTags = if ([string]::IsNullOrWhiteSpace($filter)) { $allTags } else { $allTags | Select-String -Pattern $filter }
+        $totalPages = [Math]::Ceiling($filteredTags.Count / $pageSize)
+        $currentPage = [Math]::Max(0, [Math]::Min($currentPage, $totalPages - 1))
+        $tagsToShow = $filteredTags | Select-Object -Skip ($currentPage * $pageSize) -First $pageSize
+        
+        Write-Host "--- 共 $($filteredTags.Count) 个版本，第 $($currentPage + 1)/$totalPages 页 ---"
+        for ($i = 0; $i -lt $tagsToShow.Count; $i++) {
+            $index = ($currentPage * $pageSize) + $i + 1
+            Write-Host ("  [{0,3}] {1}" -f $index, $tagsToShow[$i])
+        }
+
+        Write-Host "`n操作提示:" -ForegroundColor Yellow
+        Write-Host "  - 直接输入 " -NoNewline; Write-Host "序号" -ForegroundColor Green -NoNewline; Write-Host " (如 '123') 或 " -NoNewline; Write-Host "版本全名" -ForegroundColor Green -NoNewline; Write-Host " (如 '1.10.0') 进行选择"
+        Write-Host "  - 输入 " -NoNewline; Write-Host "a" -ForegroundColor Green -NoNewline; Write-Host " 翻到上一页，" -NoNewline; Write-Host "d" -ForegroundColor Green -NoNewline; Write-Host " 翻到下一页"
+        Write-Host "  - 输入 " -NoNewline; Write-Host "f [关键词]" -ForegroundColor Green -NoNewline; Write-Host " 筛选版本 (如 'f 1.10' 或 'f 2023-')"
+        Write-Host "  - 输入 " -NoNewline; Write-Host "c" -ForegroundColor Green -NoNewline; Write-Host " 清除筛选，" -NoNewline; Write-Host "q" -ForegroundColor Green -NoNewline; Write-Host " 退出"
+        $userInput = Read-TextPrompt -Label "版本操作" -Hint "序号/版本/a/d/f/c/q"
+
+        if ($userInput -eq 'q') { Write-Warning "操作已取消。"; Press-Any-Key; return }
+        elseif ($userInput -eq 'a') { if ($currentPage -gt 0) { $currentPage-- } }
+        elseif ($userInput -eq 'd') { if (($currentPage + 1) * $pageSize -lt $filteredTags.Count) { $currentPage++ } }
+        elseif ($userInput.StartsWith("f ")) { $filter = $userInput.Substring(2); $currentPage = 0 }
+        elseif ($userInput -eq 'c') { $filter = ""; $currentPage = 0 }
+        else {
+            $selectedTag = $null
+            if ($userInput -match '^\d+$' -and [int]$userInput -ge 1 -and [int]$userInput -le $filteredTags.Count) {
+                $selectedTag = $filteredTags[[int]$userInput - 1]
+            } elseif ($filteredTags -contains $userInput) {
+                $selectedTag = $userInput
+            }
+
+            if ($selectedTag) {
+                Write-Host "`n此操作仅会改变酒馆的程序版本，不会影响您的用户数据 (如聊天记录、角色卡等)。" -ForegroundColor Cyan
+                if (-not (Read-YesNoPrompt -Label "切换到版本 $($selectedTag)" -DefaultYes $true)) { Write-Warning "操作已取消。"; continue }
+
+                $repoIssues = @(Get-GitRepoIssueSummary)
+                if ($repoIssues.Count -gt 0) {
+                    Clear-Host
+                    Write-Header "检测到仓库残留状态"
+                    Write-Host "`n--- 检测结果 ---`n$($repoIssues -join "`n")`n--------------"
+                    Write-Host "这通常是上次更新/切换中断遗留，并非您的操作错误。" -ForegroundColor Cyan
+                    if (Read-YesNoPrompt -Label "是否先执行一键自愈再继续切换版本（推荐）" -DefaultYes $true) {
+                        if (Invoke-GitWorkspaceAutoRepair -Branch $Repo_Branch) {
+                            Write-Success "仓库自愈完成，继续切换版本。"
+                        } else {
+                            Write-Error "一键自愈失败，请重试。"
+                            Press-Any-Key
+                            return
+                        }
+                    }
+                }
+
+                Write-Warning "正在切换到版本 $selectedTag ..."
+                if (Test-Path ".git/index.lock") { Remove-Item ".git/index.lock" -Force }
+
+                $checkoutSucceeded = $false
+                if (Invoke-GitWithProgress -OperationName "切换到版本 $selectedTag" -GitArgs @('checkout', '-f', "tags/$selectedTag")) {
+                    $checkoutSucceeded = $true
+                } elseif (Test-GitLastOutput "overwritten by checkout|Please commit|unmerged files|conflict|index\.lock|You have not concluded your merge|rebase|cherry-pick") {
+                    $reason = "检测到程序目录与目标版本存在差异，无法直接切换。"
+                    $actionDesc = "清理程序目录差异并继续切换版本"
+                    $safeHint = "该情况很常见，确认后脚本会自动清理并继续切换，可放心继续。"
+                    $unmergedPreview = Get-GitUnmergedFilesPreview -Lines 8
+                    if (-not [string]::IsNullOrWhiteSpace($unmergedPreview)) {
+                        $reason = "检测到未解决冲突文件（通常是上次更新中断遗留）。"
+                        $actionDesc = "清理未解决冲突并继续切换"
+                        $safeHint = "该情况很常见，确认后脚本会自动清理冲突状态，可放心继续。"
+                    } elseif (Test-GitLastOutput "package-lock\.json") {
+                        $reason = "依赖配置文件 (package-lock.json) 差异，这是系统自动行为。"
+                        $actionDesc = "重置依赖配置文件"
+                        $safeHint = "该情况通常由依赖安装自动产生，可放心确认继续。"
+                    } elseif (Test-GitLastOutput "yarn\.lock|pnpm-lock\.yaml|npm-shrinkwrap\.json") {
+                        $reason = "检测到依赖锁文件差异，这是常见自动行为。"
+                        $actionDesc = "重置依赖锁文件"
+                        $safeHint = "该情况通常由依赖安装自动产生，可放心确认继续。"
+                    } elseif (Test-GitLastOutput "You have not concluded your merge|rebase|cherry-pick") {
+                        $reason = "检测到未完成的 Git 操作（merge/rebase/cherry-pick）。"
+                        $actionDesc = "终止未完成操作并恢复仓库状态"
+                        $safeHint = "该情况很常见，确认后脚本会自动修复，可放心继续。"
+                    } elseif (Test-GitLastOutput "index\.lock") {
+                        $reason = "Git 环境被锁定（可能是上次操作意外中断）。"
+                        $actionDesc = "解除锁定"
+                        $safeHint = "请继续执行修复，脚本会自动解除锁定。"
+                    }
+
+                    $preview = if (-not [string]::IsNullOrWhiteSpace($unmergedPreview)) { $unmergedPreview } else { Get-GitConflictPreview -Lines 8 }
+                    Clear-Host
+                    Write-Header "检测到切换冲突"
+                    Write-Warning "原因: $reason"
+                    if (-not [string]::IsNullOrWhiteSpace($preview)) {
+                        Write-Host "`n--- 冲突对象（来自 Git 输出） ---`n$preview`n------------------------------"
+                    }
+                    Write-Host "`n此操作将$($actionDesc)，【不会】影响您的聊天记录、角色卡等用户数据。" -ForegroundColor Cyan
+                    Write-Host $safeHint -ForegroundColor Cyan
+                    if (Read-YesNoPrompt -Label "是否执行修复并继续切换版本（推荐）" -DefaultYes $true) {
+                        if ((Invoke-GitWorkspaceAutoRepair -Branch $Repo_Branch -DeepClean) -and (Invoke-GitWithProgress -OperationName "强制切换到版本 $selectedTag" -GitArgs @('checkout', '-f', "tags/$selectedTag"))) {
+                            $checkoutSucceeded = $true
+                        } else {
+                            Write-Error "强制切换失败！"
+                        }
+                    } else {
+                        Write-Warning "已取消版本切换。"
+                    }
+                } else {
+                    Write-Error "切换版本失败！Git输出:`n$(Get-GitLastOutputTail -Lines 8)"
+                }
+
+                if (-not $checkoutSucceeded) {
+                    Press-Any-Key
+                    return
+                }
+                git clean -fd
+                
+                Write-Host ""
+                Write-Success "版本已成功切换到 $selectedTag"
+                if (Run-NpmInstallWithRetry) {
+                    Write-Host ""
+                    Write-Success "版本回退完成！"
+                } else {
+                    Write-Error "版本已切换，但依赖安装失败。请尝试手动修复。"
+                }
+                Press-Any-Key
+                return
+            } else {
+                Write-Warning "输入无效，请按提示重试。"; Start-Sleep 1
+            }
+        }
+    }
+}
+
+function Show-VersionManagementMenu {
+    while ($true) {
+        Clear-Host
+        Write-Header "酒馆版本管理"
+        Write-Host "      [1] " -NoNewline; Write-Host "更新酒馆" -ForegroundColor Green
+        Write-Host "      [2] " -NoNewline; Write-Host "回退版本" -ForegroundColor Yellow
+        Write-Host "`n      [0] " -NoNewline; Write-Host "返回主菜单" -ForegroundColor Cyan
+        $choice = Read-MenuPrompt -Allowed "0-2"
+        switch ($choice) {
+            "1" { Update-SillyTavern }
+            "2" { Rollback-SillyTavern }
+            "0" { return }
+            default { Write-Warning "输入无效，请按提示重试。"; Start-Sleep 1 }
+        }
+    }
+}
+
+function Run-BackupInteractive {
+    Clear-Host
+    if (-not (Test-Path $ST_Dir)) {
+        Write-Warning "酒馆尚未安装，无法备份。"
+        Press-Any-Key
+        return
+    }
+    $AllPaths = [ordered]@{
+        "data"                                  = "用户数据 (聊天/角色/设置)"
+        "public/scripts/extensions/third-party" = "前端扩展"
+        "plugins"                               = "后端扩展"
+        "config.yaml"                           = "服务器配置 (网络/安全)"
+    }
+    $Options = @($AllPaths.Keys)
+    $SelectionStatus = @{}
+    $DefaultSelection = @("data", "public/scripts/extensions/third-party", "plugins", "config.yaml")
+    $PathsToLoad = if (Test-Path $BackupPrefsConfigFile) { Get-Content $BackupPrefsConfigFile } else { $DefaultSelection }
+    $Options | ForEach-Object { $SelectionStatus[$_] = $false }
+    $PathsToLoad | ForEach-Object { if ($SelectionStatus.ContainsKey($_)) { $SelectionStatus[$_] = $true } }
+
+    while ($true) {
+        Clear-Host
+        Write-Header "创建新的本地备份"
+        Write-Host "此处的选择将作为所有本地备份(包括自动备份)的范围。"
+        Write-Host "输入数字可切换勾选状态。"
+        for ($i = 0; $i -lt $Options.Count; $i++) {
+            $key = $Options[$i]
+            $description = $AllPaths[$key]
+            if ($SelectionStatus[$key]) {
+                Write-Host ("  [{0,2}] " -f ($i + 1)) -NoNewline
+                Write-Host "[✓] $key" -ForegroundColor Green
+            } else {
+                Write-Host ("  [{0,2}] [ ] $key" -f ($i + 1))
+            }
+            Write-Host "      ( $description )" -ForegroundColor Cyan
+        }
+        Write-Host "`n      "; Write-Host "[回车] 保存设置并开始备份" -NoNewline -ForegroundColor Green
+        Write-Host "      "; Write-Host "[0] 返回上一级" -NoNewline -ForegroundColor Red
+        Write-Host ""
+        $userChoice = Read-TextPrompt -Label "备份范围" -Hint "序号/回车/0"
+        if ([string]::IsNullOrEmpty($userChoice)) { break }
+        elseif ($userChoice -eq '0') { return }
+        elseif ($userChoice -match '^\d+$' -and [int]$userChoice -ge 1 -and [int]$userChoice -le $Options.Count) {
+            $selectedIndex = [int]$userChoice - 1
+            $selectedKey = $Options[$selectedIndex]
+            $SelectionStatus[$selectedKey] = -not $SelectionStatus[$selectedKey]
+        } else {
+            Write-Warning "输入无效，请按提示重试。"; Start-Sleep 1
+        }
+    }
+    $pathsToSave = @()
+    foreach ($key in $Options) { if ($SelectionStatus[$key]) { $pathsToSave += $key } }
+    if ($pathsToSave.Count -eq 0) {
+        Write-Warning "您没有选择任何项目，本地备份已取消。"
+        Press-Any-Key
+        return
+    }
+    Set-Content -Path $BackupPrefsConfigFile -Value ($pathsToSave -join "`r`n") -Encoding utf8
+    Write-Success "备份范围已保存！"
+    Start-Sleep 1
+    if (New-LocalZipBackup -BackupType "手动" -PathsToBackup $pathsToSave) {
+    } else {
+        Write-Error "手动本地备份创建失败。"
+    }
+    Press-Any-Key
+}
+
+function Show-ManageBackupsMenu {
+    while ($true) {
+        Clear-Host
+        if (-not (Test-Path $Backup_Root_Dir)) { New-Item -Path $Backup_Root_Dir -ItemType Directory | Out-Null }
+        $backupFiles = Get-ChildItem -Path $Backup_Root_Dir -Filter "*.zip" | Sort-Object CreationTime -Descending
+        $count = $backupFiles.Count
+        Write-Header "管理已有的本地备份 (当前: $count/$Backup_Limit)"
+        if ($count -eq 0) {
+            Write-Host "      " -NoNewline; Write-Host "没有找到任何本地备份文件。" -ForegroundColor Yellow
+        } else {
+            Write-Host " [序号] [类型]   [创建日期与时间]      [大小]     [文件名]"
+            Write-Host " ─────────────────────────────────────────────────────────────────────────"
+            for ($i = 0; $i -lt $count; $i++) {
+                $file = $backupFiles[$i]
+                $parts = $file.Name -split '[_.]'
+                $type = if ($parts.Length -ge 3) { $parts[2] } else { "未知" }
+                $date = if ($parts.Length -ge 4) { $parts[3] } else { "----------" }
+                $time = if ($parts.Length -ge 5) { $parts[4].Replace("-", ":") } else { "-----" }
+                $size = if ($file.Length -gt 1MB) { "{0:F1} MB" -f ($file.Length / 1MB) } else { "{0:F1} KB" -f ($file.Length / 1KB) }
+                Write-Host (" [{0,2}]   {1,-7}  {2} {3}  {4,-9}  {5}" -f ($i + 1), $type, $date, $time, $size, $file.Name)
+            }
+        }
+        Write-Host "`n  删除序号支持空格分隔，可输入 all。" -ForegroundColor Red
+        Write-Host "  回车或 0 返回上一级。" -ForegroundColor Cyan
+        $selection = Read-TextPrompt -Label "  删除序号" -Hint "序号/all/回车/0"
+        if ([string]::IsNullOrEmpty($selection) -or $selection -eq '0') { break }
+        $filesToDelete = New-Object System.Collections.Generic.List[System.IO.FileInfo]
+        if ($selection -eq 'all' -or $selection -eq '*') {
+            $filesToDelete.AddRange($backupFiles)
+        } else {
+            $indices = $selection -split ' ' | Where-Object { $_ -match '^\d+$' } | ForEach-Object { [int]$_ }
+            foreach ($index in $indices) {
+                if ($index -ge 1 -and $index -le $count) {
+                    $filesToDelete.Add($backupFiles[$index - 1])
+                } else {
+                    Write-Error "序号无效: $index"; Start-Sleep 2; continue 2
+                }
+            }
+        }
+        if ($filesToDelete.Count -gt 0) {
+            Clear-Host
+            Write-Warning "警告：以下本地备份文件将被永久删除，此操作不可撤销！"
+            $filesToDelete | ForEach-Object { Write-Host "  - " -NoNewline; Write-Host $_.Name -ForegroundColor Red }
+            if (Read-YesNoPrompt -Label "删除这 $($filesToDelete.Count) 个文件" -DefaultYes $false) {
+                $filesToDelete | ForEach-Object { Remove-Item $_.FullName }
+                Write-Success "选定的本地备份文件已删除。"; Start-Sleep 2
+            } else {
+                Write-Warning "操作已取消。"; Start-Sleep 2
+            }
+        }
+    }
+}
+
+function Show-BackupMenu {
+    while ($true) {
+        Clear-Host
+        Write-Header "本地备份管理"
+        Write-Host "      [1] " -NoNewline; Write-Host "创建新的本地备份" -ForegroundColor Cyan
+        Write-Host "      [2] " -NoNewline; Write-Host "管理已有的本地备份" -ForegroundColor Cyan
+        Write-Host "`n      [0] " -NoNewline; Write-Host "返回主菜单" -ForegroundColor Cyan
+        $choice = Read-MenuPrompt -Allowed "0-2"
+        switch ($choice) {
+            '1' { Run-BackupInteractive }
+            '2' { Show-ManageBackupsMenu }
+            '0' { return }
+            default { Write-Warning "输入无效，请按提示重试。"; Start-Sleep 1 }
+        }
+    }
+}
+
+function Get-GitVersionInfo {
+    param([string]$Path)
+    if (-not (Test-Path (Join-Path $Path ".git"))) { return "未知" }
+    try {
+        $currentLocation = Get-Location
+        Set-Location $Path
+        $date = git log -1 --format=%cd --date=format:'%Y-%m-%d' 2>$null
+        $hash = git rev-parse --short HEAD 2>$null
+        Set-Location $currentLocation
+        if ($date -and $hash) {
+            return "$date ($hash)"
+        }
+    } catch {}
+    return "未知"
+}
+
+function Resolve-ExistingPath {
+    param([string]$Path)
+    if (-not (Test-Path $Path)) { return $null }
+    try {
+        return (Resolve-Path -LiteralPath $Path -ErrorAction Stop).Path
+    } catch {
+        return $null
+    }
+}
+
+function Test-ManagedDirectoryLink {
+    param(
+        [string]$TargetPath,
+        [string]$SourcePath
+    )
+
+    if (-not (Test-Path $TargetPath)) { return $false }
+
+    try {
+        $item = Get-Item -LiteralPath $TargetPath -Force -ErrorAction Stop
+    } catch {
+        return $false
+    }
+
+    if (-not ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+        return $false
+    }
+
+    $resolvedTarget = Resolve-ExistingPath -Path $TargetPath
+    $resolvedSource = Resolve-ExistingPath -Path $SourcePath
+    if ([string]::IsNullOrWhiteSpace($resolvedTarget) -or [string]::IsNullOrWhiteSpace($resolvedSource)) {
+        return $false
+    }
+
+    return $resolvedTarget -eq $resolvedSource
+}
+
+function Install-ManagedRepo {
+    param(
+        [string]$ProjectName,
+        [string]$RepoUrl,
+        [string]$InstallDir,
+        [string]$RouteHost,
+        [string]$DirectRepoUrl
+    )
+
+    if ((Test-Path $InstallDir) -and -not (Test-Path (Join-Path $InstallDir ".git"))) {
+        Write-Error "$ProjectName 目录已存在，但不是 Git 仓库：$InstallDir"
+        return $false
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($DirectRepoUrl)) {
+        $resolvedGitUrl = $DirectRepoUrl
+    } elseif ([string]::IsNullOrWhiteSpace($RouteHost)) {
+        $selectedRoute = Resolve-DownloadRoute -OperationName "部署 $ProjectName" -GitUrl $RepoUrl
+        if (-not $selectedRoute) {
+            Write-Error "未能为 $ProjectName 选定可用下载线路。"
+            return $false
+        }
+        $resolvedGitUrl = $selectedRoute.GitUrl
+    } else {
+        $resolvedGitUrl = Get-GitUrlByRouteHost -RouteHost $RouteHost -GitHubUrl $RepoUrl
+        if ([string]::IsNullOrWhiteSpace($resolvedGitUrl)) {
+            Write-Error "无法将线路 [$RouteHost] 应用于 $ProjectName。"
+            return $false
+        }
+    }
+
+    if (Test-Path (Join-Path $InstallDir ".git")) {
+        Set-Location $InstallDir
+        git remote set-url origin $resolvedGitUrl
+        if (-not (Invoke-GitWithProgress -OperationName "拉取 $ProjectName 更新" -GitArgs @('fetch', '--progress', '--all'))) {
+            Set-Location $ScriptBaseDir
+            Write-Error "$ProjectName 拉取更新失败：`n$(Get-GitLastOutputTail -Lines 8)"
+            return $false
+        }
+
+        git reset --hard origin/$(git rev-parse --abbrev-ref HEAD)
+        if ($LASTEXITCODE -ne 0) {
+            Set-Location $ScriptBaseDir
+            Write-Error "$ProjectName 更新失败，请检查目录权限或 Git 状态。"
+            return $false
+        }
+
+        Set-Location $ScriptBaseDir
+        return $true
+    }
+
+    New-Item -Path (Split-Path -Path $InstallDir -Parent) -ItemType Directory -Force | Out-Null
+    if (-not (Invoke-GitWithProgress -OperationName "克隆 $ProjectName 仓库" -GitArgs @('clone', '--progress', $resolvedGitUrl, $InstallDir))) {
+        Write-Error "$ProjectName 克隆失败：`n$(Get-GitLastOutputTail -Lines 8)"
+        return $false
+    }
+
+    return $true
+}
+
+function New-ManagedDirectoryLink {
+    param(
+        [string]$SourcePath,
+        [string]$TargetPath
+    )
+
+    if (-not (Test-Path $SourcePath)) {
+        Write-Error "无法创建连接，源目录不存在：$SourcePath"
+        return $false
+    }
+
+    if (Test-Path $TargetPath) {
+        if (Test-ManagedDirectoryLink -TargetPath $TargetPath -SourcePath $SourcePath) {
+            return $true
+        }
+        Write-Error "目标位置已存在非托管目录或其他连接，请先手动处理：$TargetPath"
+        return $false
+    }
+
+    New-Item -Path (Split-Path -Path $TargetPath -Parent) -ItemType Directory -Force | Out-Null
+    try {
+        New-Item -Path $TargetPath -ItemType Junction -Target $SourcePath -ErrorAction Stop | Out-Null
+        return $true
+    } catch {
+        Write-Error "创建目录连接失败：$($_.Exception.Message)"
+        return $false
+    }
+}
+
+function Move-LegacyGuguTransitDir {
+    param(
+        [string]$LegacyPath,
+        [string]$TargetPath
+    )
+
+    if (-not (Test-Path $LegacyPath)) {
+        return $true
+    }
+
+    if (Test-ManagedDirectoryLink -TargetPath $TargetPath -SourcePath $LegacyPath) {
+        Remove-Item -LiteralPath $TargetPath -Force -ErrorAction Stop
+        Move-Item -Path $LegacyPath -Destination $TargetPath -Force
+        return $true
+    }
+
+    if (Test-Path $TargetPath) {
+        return $true
+    }
+
+    New-Item -Path (Split-Path -Path $TargetPath -Parent) -ItemType Directory -Force | Out-Null
+    Move-Item -Path $LegacyPath -Destination $TargetPath -Force
+    return $true
+}
+
+function Remove-ManagedDirectoryLink {
+    param(
+        [string]$SourcePath,
+        [string]$TargetPath
+    )
+
+    if (-not (Test-Path $TargetPath)) {
+        return $true
+    }
+
+    if (-not (Test-ManagedDirectoryLink -TargetPath $TargetPath -SourcePath $SourcePath)) {
+        Write-Error "目标位置不是当前托管项目的目录连接，拒绝自动删除：$TargetPath"
+        return $false
+    }
+
+    try {
+        Remove-Item -LiteralPath $TargetPath -Force -ErrorAction Stop
+        return $true
+    } catch {
+        Write-Error "删除目录连接失败：$($_.Exception.Message)"
+        return $false
+    }
+}
+
+function Write-GuguTransitInstallMarker {
+    $markerPath = Join-Path $GuguTransitExtDir '.install-marker.json'
+    $markerDir = Split-Path -Path $markerPath -Parent
+    if (-not (Test-Path $markerDir)) {
+        New-Item -Path $markerDir -ItemType Directory -Force | Out-Null
+    }
+
+    $frontendCommit = ''
+    $backendCommit = ''
+    if (Test-Path (Join-Path $GuguTransitExtDir '.git')) {
+        $frontendCommit = (& git -C $GuguTransitExtDir rev-parse --short HEAD 2>$null | Out-String).Trim()
+    }
+    if (Test-Path (Join-Path $GuguTransitPluginDir '.git')) {
+        $backendCommit = (& git -C $GuguTransitPluginDir rev-parse --short HEAD 2>$null | Out-String).Trim()
+    }
+
+    $payload = [ordered]@{
+        installedAt = [DateTimeOffset]::Now.ToUnixTimeMilliseconds()
+        frontend = [ordered]@{ commit = $frontendCommit }
+        backend = [ordered]@{ commit = $backendCommit }
+    }
+    $json = $payload | ConvertTo-Json -Depth 4
+    [System.IO.File]::WriteAllText($markerPath, $json, [System.Text.UTF8Encoding]::new($false))
+}
+
+function Resolve-GuguTransitRoute {
+    $localMode = Get-GuguTransitRouteMode
+    if ($localMode -eq $GuguTransitRouteModeGitHub -or $localMode -eq $GuguTransitRouteModeGitee) {
+        return $localMode
+    }
+
+    try {
+        Initialize-FirstPartySources
+        return $script:SourceProvider
+    } catch {
+        return "unknown"
+    }
+}
+
+function Get-GuguTransitRouteMode {
+    if (-not (Test-Path $LabConfigFile)) {
+        return $GuguTransitRouteModeFollow
+    }
+
+    $matchedLine = Select-String -Path $LabConfigFile -Pattern "^$GuguTransitRouteModeKey=""([^""]*)""$" | Select-Object -Last 1
+    if ($null -eq $matchedLine) {
+        return $GuguTransitRouteModeFollow
+    }
+
+    $routeMode = $matchedLine.Matches[0].Groups[1].Value
+    switch ($routeMode) {
+        $GuguTransitRouteModeGitHub { return $routeMode }
+        $GuguTransitRouteModeGitee { return $routeMode }
+        $GuguTransitRouteModeFollow { return $routeMode }
+        default { return $GuguTransitRouteModeFollow }
+    }
+}
+
+function Set-GuguTransitRouteMode {
+    param([string]$RouteMode)
+
+    if (-not (Test-Path $ConfigDir)) {
+        New-Item -Path $ConfigDir -ItemType Directory -Force | Out-Null
+    }
+    if (-not (Test-Path $LabConfigFile)) {
+        New-Item -Path $LabConfigFile -ItemType File -Force | Out-Null
+    }
+
+    $lines = @()
+    if (Test-Path $LabConfigFile) {
+        $lines = Get-Content -Path $LabConfigFile | Where-Object { $_ -notmatch "^$GuguTransitRouteModeKey=" }
+    }
+    $lines += "$GuguTransitRouteModeKey=""$RouteMode"""
+    Set-Content -Path $LabConfigFile -Value $lines -Encoding utf8
+}
+
+function Get-GuguTransitRouteLabel {
+    param([string]$Route)
+    switch ($Route) {
+        "github" { return "GitHub" }
+        "gitee" { return "Gitee" }
+        default { return "未知" }
+    }
+}
+
+function Get-GuguTransitRouteModeLabel {
+    $routeMode = Get-GuguTransitRouteMode
+    if ($routeMode -eq $GuguTransitRouteModeGitHub) { return "本地固定：GitHub" }
+    if ($routeMode -eq $GuguTransitRouteModeGitee) { return "本地固定：Gitee" }
+
+    $routeLabel = Get-GuguTransitRouteLabel -Route (Resolve-GuguTransitRoute)
+    if ($routeLabel -eq "未知") { return "跟随服务器（当前不可用）" }
+    return "跟随服务器（当前：$routeLabel）"
+}
+
+function Get-GuguTransitRepoUrl {
+    param(
+        [string]$Component,
+        [string]$Route
+    )
+
+    if ($Route -eq $GuguTransitRouteModeGitHub) {
+        if ($Component -eq "frontend") { return $GuguTransitExtRepoGitHubUrl }
+        return $GuguTransitPluginRepoGitHubUrl
+    }
+    if ($Route -eq $GuguTransitRouteModeGitee) {
+        if ($Component -eq "frontend") { return $GuguTransitExtRepoGiteeUrl }
+        return $GuguTransitPluginRepoGiteeUrl
+    }
+
+    Initialize-FirstPartySources
+    if ($Component -eq "frontend") { return $script:GuguTransitExtRepoUrl }
+    return $script:GuguTransitPluginRepoUrl
+}
+
+function Show-GuguTransitRouteMenu {
+    while ($true) {
+        Clear-Host
+        Write-Header "切换当前发布源"
+        Write-Host "      当前来源: " -NoNewline
+        Write-Host (Get-GuguTransitRouteModeLabel) -ForegroundColor Yellow
+        Write-Host "      [1] " -NoNewline; Write-Host "跟随服务器" -ForegroundColor Cyan
+        Write-Host "      [2] " -NoNewline; Write-Host "固定为 GitHub" -ForegroundColor Cyan
+        Write-Host "      [3] " -NoNewline; Write-Host "固定为 Gitee" -ForegroundColor Cyan
+        Write-Host "      [0] " -NoNewline; Write-Host "返回上一级" -ForegroundColor Cyan
+
+        $choice = Read-MenuPrompt -Allowed "0-3"
+        switch ($choice) {
+            "1" {
+                Set-GuguTransitRouteMode -RouteMode $GuguTransitRouteModeFollow
+                Write-Success "已切换为：跟随服务器。"
+                Start-Sleep 1
+            }
+            "2" {
+                Set-GuguTransitRouteMode -RouteMode $GuguTransitRouteModeGitHub
+                Write-Success "已切换为：固定使用 GitHub。"
+                Start-Sleep 1
+            }
+            "3" {
+                Set-GuguTransitRouteMode -RouteMode $GuguTransitRouteModeGitee
+                Write-Success "已切换为：固定使用 Gitee。"
+                Start-Sleep 1
+            }
+            "0" { return }
+            default {
+                Write-Warning "输入无效，请按提示重试。"
+                Start-Sleep 1
+            }
+        }
+    }
+}
+
+function Get-GuguTransitStatus {
+    $extReady = Test-Path (Join-Path $GuguTransitExtDir ".git")
+    $pluginReady = Test-Path (Join-Path $GuguTransitPluginDir ".git")
+
+    if ($extReady -and $pluginReady) { return "已安装" }
+    if ((Test-Path $GuguTransitExtDir) -or (Test-Path $GuguTransitPluginDir) -or (Test-Path $LegacyGuguTransitExtDir) -or (Test-Path $LegacyGuguTransitPluginDir) -or (Test-Path $GuguTransitExtTarget) -or (Test-Path $GuguTransitPluginTarget)) {
+        return "安装不完整"
+    }
+
+    return "未安装"
+}
+
+function Install-GuguTransitManager {
+    Clear-Host
+    Write-Header "安装/更新咕咕助手 - 中转管理"
+    $serverPluginsEnabled = $false
+    $serverPluginsAutoUpdateEnabled = $false
+
+    try {
+        $route = Resolve-GuguTransitRoute
+        $frontendRepoUrl = Get-GuguTransitRepoUrl -Component "frontend" -Route $route
+        $backendRepoUrl = Get-GuguTransitRepoUrl -Component "backend" -Route $route
+    } catch {
+        Write-Error $_.Exception.Message
+        Press-Any-Key
+        return
+    }
+
+    if (-not (Test-Path $ST_Dir)) {
+        Write-Error "未检测到酒馆目录，请先完成首次部署。"
+        Press-Any-Key
+        return
+    }
+
+    try {
+        if (-not (Move-LegacyGuguTransitDir -LegacyPath $LegacyGuguTransitExtDir -TargetPath $GuguTransitExtDir)) {
+            Write-Error "旧版前端目录迁移失败。"
+            Press-Any-Key
+            return
+        }
+
+        if (-not (Move-LegacyGuguTransitDir -LegacyPath $LegacyGuguTransitPluginDir -TargetPath $GuguTransitPluginDir)) {
+            Write-Error "旧版后端目录迁移失败。"
+            Press-Any-Key
+            return
+        }
+    } catch {
+        Write-Error "旧版目录迁移失败：$($_.Exception.Message)"
+        Press-Any-Key
+        return
+    }
+
+    Write-Host "当前仓库: " -NoNewline
+    Write-Host (Get-GuguTransitRouteLabel -Route $route) -ForegroundColor Yellow
+
+    if (-not (Install-ManagedRepo -ProjectName "前端扩展" -RepoUrl $frontendRepoUrl -InstallDir $GuguTransitExtDir -RouteHost $null -DirectRepoUrl $frontendRepoUrl)) {
+        Press-Any-Key
+        return
+    }
+
+    if (-not (Install-ManagedRepo -ProjectName "后端插件" -RepoUrl $backendRepoUrl -InstallDir $GuguTransitPluginDir -RouteHost $null -DirectRepoUrl $backendRepoUrl)) {
+        Press-Any-Key
+        return
+    }
+
+    $serverPluginsEnabled = (Get-STConfigValue "enableServerPlugins") -eq "true"
+    $serverPluginsAutoUpdateEnabled = (Get-STConfigValue "enableServerPluginsAutoUpdate") -eq "true"
+    Write-GuguTransitInstallMarker
+    if (-not $serverPluginsEnabled) {
+        if (-not (Set-STRootBooleanValue "enableServerPlugins" $true)) {
+            Write-Error "开启酒馆后端插件失败，请检查 config.yaml 是否可写。"
+            Press-Any-Key
+            return
+        }
+        Write-Warning "检测到酒馆后端插件原本未开启，已自动开启。"
+    }
+    if ($serverPluginsAutoUpdateEnabled) {
+        if (-not (Set-STRootBooleanValue "enableServerPluginsAutoUpdate" $false)) {
+            Write-Error "关闭后端插件自动更新失败，请检查 config.yaml 是否可写。"
+            Press-Any-Key
+            return
+        }
+        Write-Warning "已自动关闭后端插件自动更新，避免仓库异常阻塞酒馆启动。"
+    }
+
+    Write-Success "咕咕助手 - 中转管理 已安装/更新完成。"
+    Write-Warning "如酒馆正在运行，必须重启一次后再使用。"
+    Press-Any-Key
+}
+
+function Uninstall-GuguTransitManager {
+    Clear-Host
+    Write-Header "卸载咕咕助手 - 中转管理"
+
+    if (-not (Read-YesNoPrompt -Label "卸载咕咕助手 - 中转管理" -DefaultYes $false -Note "这将移除前端扩展、后端插件和托管仓库。")) {
+        Write-Warning "操作已取消。"
+        Press-Any-Key
+        return
+    }
+
+    if (Test-Path $GuguTransitExtDir) {
+        Remove-Item -Path $GuguTransitExtDir -Recurse -Force
+    }
+    if (Test-Path $GuguTransitPluginDir) {
+        Remove-Item -Path $GuguTransitPluginDir -Recurse -Force
+    }
+    if (Test-Path $LegacyGuguTransitExtDir) {
+        Remove-Item -Path $LegacyGuguTransitExtDir -Recurse -Force
+    }
+    if (Test-Path $LegacyGuguTransitPluginDir) {
+        Remove-Item -Path $LegacyGuguTransitPluginDir -Recurse -Force
+    }
+    if (Test-Path $LegacyGuguBoxDir) {
+        try { Remove-Item -Path $LegacyGuguBoxDir -Force -ErrorAction Stop } catch {}
+    }
+
+    Write-Success "咕咕助手 - 中转管理 已卸载。"
+    Press-Any-Key
+}
+
+function Show-GuguTransitManagerMenu {
+    while ($true) {
+        Clear-Host
+        Write-Header "咕咕助手 - 中转管理"
+        $status = Get-GuguTransitStatus
+        Write-Host "      当前状态: " -NoNewline
+        switch ($status) {
+            "已安装" { Write-Host $status -ForegroundColor Green }
+            "安装不完整" { Write-Host $status -ForegroundColor Yellow }
+            default { Write-Host $status -ForegroundColor Red }
+        }
+        Write-Host "      当前仓库: " -NoNewline
+        Write-Host (Get-GuguTransitRouteModeLabel) -ForegroundColor Yellow
+
+        if (Test-Path (Join-Path $GuguTransitExtDir ".git")) {
+            Write-Host "      前端版本: " -NoNewline
+            Write-Host (Get-GitVersionInfo -Path $GuguTransitExtDir) -ForegroundColor Yellow
+        }
+        if (Test-Path (Join-Path $GuguTransitPluginDir ".git")) {
+            Write-Host "      后端版本: " -NoNewline
+            Write-Host (Get-GitVersionInfo -Path $GuguTransitPluginDir) -ForegroundColor Yellow
+        }
+
+        Write-Host ""
+        Write-Host "      [01] " -NoNewline; Write-Host "安装/更新" -ForegroundColor Cyan
+        if (($status -ne "未安装") -or (Test-Path $LegacyGuguTransitExtDir) -or (Test-Path $LegacyGuguTransitPluginDir)) {
+            Write-Host "      [02] " -NoNewline; Write-Host "卸载" -ForegroundColor Red
+        }
+        Write-Host "      [03] " -NoNewline; Write-Host "切换当前发布源" -ForegroundColor Cyan
+        Write-Host "      [00] " -NoNewline; Write-Host "返回上一级" -ForegroundColor Cyan
+
+        $allowedChoices = if (($status -eq "未安装") -and -not (Test-Path $LegacyGuguTransitExtDir) -and -not (Test-Path $LegacyGuguTransitPluginDir)) { "0/1/3" } else { "0-3" }
+        $choice = Read-MenuPrompt -Allowed $allowedChoices
+        switch ($choice) {
+            "1" { Install-GuguTransitManager }
+            "2" { Uninstall-GuguTransitManager }
+            "3" { Show-GuguTransitRouteMenu }
+            "0" { return }
+            default { Write-Warning "输入无效，请按提示重试。"; Start-Sleep 1 }
+        }
+    }
+}
+
+function Show-GuguBoxMenu {
+    while ($true) {
+        Clear-Host
+        Write-Header "咕咕宝箱"
+        $status = Get-GuguTransitStatus
+        Write-Host "      [01] " -NoNewline; Write-Host "咕咕助手 - 中转管理" -ForegroundColor Cyan -NoNewline
+        Write-Host "  [$status]" -ForegroundColor DarkGray
+        Write-Host "      [00] " -NoNewline; Write-Host "返回主菜单" -ForegroundColor Cyan
+
+        $choice = Read-MenuPrompt -Allowed "0/1"
+        switch ($choice) {
+            "1" { Show-GuguTransitManagerMenu }
+            "0" { return }
+            default { Write-Warning "输入无效，请按提示重试。"; Start-Sleep 1 }
+        }
+    }
+}
+
+function Get-Gcli2ApiStatus {
+    $connection = Get-NetTCPConnection -LocalPort 7861 -State Listen -ErrorAction SilentlyContinue
+    if ($null -ne $connection) {
+        return "运行中"
+    } else {
+        return "未运行"
+    }
+}
+
+function Stop-Gcli2ApiService {
+    Write-Warning "正在停止 gcli2api 服务..."
+    $connection = Get-NetTCPConnection -LocalPort 7861 -State Listen -ErrorAction SilentlyContinue
+    if ($null -ne $connection) {
+        $processId = $connection.OwningProcess
+        try {
+            Stop-Process -Id $processId -Force -ErrorAction Stop
+            Write-Success "服务已停止 (PID: $processId)。"
+        } catch {
+            Write-Error "停止进程 PID:$($processId) 失败: $($_.Exception.Message)"
+        }
+    } else {
+        Write-Warning "服务未在运行。"
+    }
+}
+
+function Start-Gcli2ApiService {
+    if (-not (Test-Path $GcliDir)) {
+        Write-Error "gcli2api 尚未安装。"
+        return $false
+    }
+    if ((Get-Gcli2ApiStatus) -eq "运行中") {
+        Write-Warning "服务已经在运行中。"
+        return $true
+    }
+
+    $pythonExe = Join-Path $GcliDir ".venv/Scripts/python.exe"
+    $webPy = Join-Path $GcliDir "web.py"
+    if (-not (Test-Path $pythonExe) -or -not (Test-Path $webPy)) {
+        Write-Error "gcli2api 环境不完整，请尝试重新安装。"
+        return $false
+    }
+
+    Write-Warning "正在新窗口中启动 gcli2api 服务..."
+    try {
+        $powerShellExecutable = if (Get-Command pwsh -ErrorAction SilentlyContinue) { "pwsh.exe" } else { "powershell.exe" }
+        $command = "& `"$pythonExe`" -u `"$webPy`"; Write-Host '`n进程已结束，请按任意键关闭此窗口...'; [System.Console]::ReadKey({intercept: `$true}) | Out-Null"
+        Start-Process $powerShellExecutable -ArgumentList "-NoExit", "-Command", $command -WorkingDirectory $GcliDir
+        
+        Write-Host "正在等待服务初始化 (最多15秒)..." -ForegroundColor DarkGray
+        $startTime = Get-Date
+        $timeout = 15
+        $connection = $null
+
+        while (((Get-Date) - $startTime).TotalSeconds -lt $timeout) {
+            $connection = Get-NetTCPConnection -LocalPort 7861 -State Listen -ErrorAction SilentlyContinue
+            if ($null -ne $connection) {
+                break
+            }
+            Start-Sleep -Seconds 1
+        }
+
+        if ($null -ne $connection) {
+            Write-Success "服务启动成功！请在新窗口中查看日志。"
+            return $true
+        } else {
+            Write-Error "服务启动失败，请在新窗口中查看错误信息。"
+            return $false
+        }
+    } catch {
+        Write-Error "启动服务时发生错误: $($_.Exception.Message)"
+        return $false
+    }
+}
+
+function Uninstall-Gcli2Api {
+    Clear-Host
+    Write-Header "卸载 gcli2api"
+    if (Read-YesNoPrompt -Label "卸载 gcli2api" -DefaultYes $false -Note "这将删除程序目录和配置文件。") {
+        Stop-Gcli2ApiService
+        if (Test-Path $GcliDir) {
+            Write-Warning "正在删除目录: $GcliDir"
+            Remove-Item -Path $GcliDir -Recurse -Force
+        }
+        Update-SyncRuleValue "AUTO_START_GCLI" $null $LabConfigFile
+        Write-Success "gcli2api 已卸载。"
+    } else {
+        Write-Warning "操作已取消。"
+    }
+    Press-Any-Key
+}
+
+function Install-Gcli2Api {
+    Clear-Host
+    Write-Header "安装/更新 gcli2api"
+    
+    Write-Host "【重要提示】" -ForegroundColor Red
+    Write-Host "此组件 (gcli2api) 由 " -NoNewline; Write-Host "su-kaka" -ForegroundColor Cyan -NoNewline; Write-Host " 开发。"
+    Write-Host "项目地址: https://github.com/su-kaka/gcli2api"
+    Write-Host "本脚本仅作为聚合工具提供安装引导，不修改其原始代码。"
+    Write-Host "该组件遵循 " -NoNewline; Write-Host "CNC-1.0" -ForegroundColor Yellow -NoNewline; Write-Host " 协议，" -NoNewline; Write-Host "严禁商业用途" -ForegroundColor Red -NoNewline; Write-Host "。"
+    Write-Host "所有2api项目均存在封号风险，继续安装即代表您知晓并愿意承担此风险。" -ForegroundColor Red
+    Write-Host "继续安装即代表您知晓并同意遵守该协议。"
+    Write-Host "────────────────────────────────────────"
+    if (-not (Read-KeywordConfirm -Keyword "yes" -ActionText "继续")) {
+        Write-Warning "操作已取消。"; Press-Any-Key; return
+    }
+
+    Write-Warning "正在检查环境依赖..."
+    if (-not (Check-Command "git") -or -not (Check-Command "python")) {
+        Write-Error "错误: Git 或 Python 未安装。"
+        Write-Host "请确保已安装 Git 和 Python 3.10+ 并将其添加至系统 PATH。" -ForegroundColor Cyan
+        Press-Any-Key; return
+    }
+    if (-not (Check-Command "uv")) {
+        Write-Warning "正在安装 uv (Python 环境管理工具)..."
+        python -m pip install uv
+        if ($LASTEXITCODE -ne 0) { Write-ErrorExit "uv 安装失败！请检查 pip 是否正确配置。" }
+    }
+    Write-Success "核心依赖检查通过。"
+
+    $selectedRoute = Resolve-DownloadRoute -OperationName "部署 gcli2api" -GitUrl "https://github.com/su-kaka/gcli2api.git"
+    if (-not $selectedRoute) {
+        Write-Error "未能选定可用下载线路。"; Press-Any-Key; return
+    }
+
+    Write-Warning "正在部署 gcli2api..."
+    if (Test-Path $GcliDir) {
+        Write-Warning "检测到旧目录，正在尝试更新..."
+        Set-Location $GcliDir
+
+        git remote set-url origin $selectedRoute.GitUrl
+        if (-not (Invoke-GitWithProgress -OperationName "拉取 gcli2api 更新" -GitArgs @('fetch', '--progress', '--all'))) {
+            Set-Location $ScriptBaseDir
+            if (Test-GitLastOutput "Failed to connect to .* port .*|Could not connect to server|Connection timed out|Could not resolve host") {
+                Write-GitNetworkTroubleshooting
+            }
+            Write-Error "Git 拉取更新失败！输出:`n$(Get-GitLastOutputTail -Lines 8)"
+            Press-Any-Key
+            return
+        }
+
+        git reset --hard origin/$(git rev-parse --abbrev-ref HEAD)
+        if ($LASTEXITCODE -ne 0) {
+            Set-Location $ScriptBaseDir
+            Write-Error "Git 重置失败！请检查文件占用或手动处理。"; Press-Any-Key; return
+        }
+    } else {
+        Write-Warning "正在使用线路 [$($selectedRoute.Host)] 克隆 gcli2api..."
+        if (-not (Invoke-GitWithProgress -OperationName "克隆 gcli2api 仓库" -GitArgs @('clone', '--progress', $selectedRoute.GitUrl, $GcliDir))) {
+            if (Test-GitLastOutput "Failed to connect to .* port .*|Could not connect to server|Connection timed out|Could not resolve host") {
+                Write-GitNetworkTroubleshooting
+            }
+            Write-Error "克隆 gcli2api 仓库失败！Git输出:`n$(Get-GitLastOutputTail -Lines 8)"; Press-Any-Key; return
+        }
+    }
+    Set-Location $GcliDir
+
+    Write-Warning "正在初始化 Python 环境并安装依赖 (uv)..."
+    python -m uv venv --clear
+
+    $installSuccess = $false
+    Write-Warning "尝试使用官方源安装依赖..."
+    python -m uv pip install -r requirements.txt --python .venv
+    if ($LASTEXITCODE -eq 0) { $installSuccess = $true }
+
+    if (-not $installSuccess) {
+        Write-Warning "官方源安装失败，自动切换到清华镜像..."
+        python -m uv pip install -r requirements.txt --python .venv --index-url https://pypi.tuna.tsinghua.edu.cn/simple
+        if ($LASTEXITCODE -eq 0) { $installSuccess = $true }
+    }
+
+    if (-not $installSuccess) {
+        Set-Location $ScriptBaseDir
+        Write-Error "Python 依赖安装失败！"; Press-Any-Key; return
+    }
+    Set-Location $ScriptBaseDir
+
+    Update-SyncRuleValue "AUTO_START_GCLI" "true" $LabConfigFile
+
+    Write-Success "gcli2api 安装/更新完成！"
+
+    if (Start-Gcli2ApiService) {
+        Write-Warning "正在尝试打开 Web 面板 (http://127.0.0.1:7861)..."
+        try {
+            Start-Process "http://127.0.0.1:7861"
+        } catch {
+            Write-Error "无法自动打开浏览器。"
+        }
+    } else {
+        Write-Error "服务启动失败，未能自动打开面板。"
+    }
+    
+    Press-Any-Key
+}
+
+function Toggle-Gcli2ApiAutostart {
+    $labConfig = Parse-ConfigFile $LabConfigFile
+    $currentStatus = if ($labConfig.ContainsKey("AUTO_START_GCLI")) { $labConfig["AUTO_START_GCLI"] } else { "false" }
+    $newStatus = if ($currentStatus -eq "true") { "false" } else { "true" }
+    
+    Update-SyncRuleValue "AUTO_START_GCLI" $newStatus $LabConfigFile
+
+    if ($newStatus -eq "true") {
+        Write-Success "已开启跟随启动。"
+    } else {
+        Write-Warning "已关闭跟随启动。"
+    }
+    Start-Sleep -Seconds 1
+}
+
+function Show-Gcli2ApiMenu {
+    while ($true) {
+        Clear-Host
+        Write-Header "gcli2api 管理"
+        
+        $statusText = Get-Gcli2ApiStatus
+        $isRunning = $statusText -eq "运行中"
+        
+        Write-Host "      当前状态: " -NoNewline
+        if ($isRunning) { Write-Host $statusText -ForegroundColor Green } else { Write-Host $statusText -ForegroundColor Red }
+
+        if (Test-Path $GcliDir) {
+            $version = Get-GitVersionInfo -Path $GcliDir
+            Write-Host "      当前版本: " -NoNewline; Write-Host $version -ForegroundColor Yellow
+        }
+
+        $labConfig = Parse-ConfigFile $LabConfigFile
+        $autoStartEnabled = $labConfig.ContainsKey("AUTO_START_GCLI") -and $labConfig["AUTO_START_GCLI"] -eq "true"
+        
+        Write-Host "`n      [1] " -NoNewline; Write-Host "安装/更新" -ForegroundColor Cyan
+        
+        if (Test-Path $GcliDir) {
+            if ($isRunning) {
+                Write-Host "      [2] " -NoNewline; Write-Host "停止服务" -ForegroundColor Yellow
+            } else {
+                Write-Host "      [2] " -NoNewline; Write-Host "启动服务" -ForegroundColor Green
+            }
+            
+            Write-Host "      [3] 跟随酒馆启动: " -NoNewline
+            if ($autoStartEnabled) { Write-Host "[开启]" -ForegroundColor Green } else { Write-Host "[关闭]" -ForegroundColor Red }
+
+            Write-Host "      [4] " -NoNewline; Write-Host "卸载 gcli2api" -ForegroundColor Red
+            Write-Host "      [5] " -NoNewline; Write-Host "打开 Web 面板"
+        }
+        
+        Write-Host "      [0] " -NoNewline; Write-Host "返回上一级" -ForegroundColor Cyan
+
+        $allowedChoices = if (Test-Path $GcliDir) { "0-5" } else { "0/1" }
+        $choice = Read-MenuPrompt -Allowed $allowedChoices
+        
+        if (-not (Test-Path $GcliDir) -and $choice -ne '1' -and $choice -ne '0') {
+            Write-Warning "输入无效，gcli2api 尚未安装。"; Start-Sleep 1.5
+            continue
+        }
+
+        switch ($choice) {
+            "1" { Install-Gcli2Api }
+            "2" {
+                if ($isRunning) { Stop-Gcli2ApiService } else { Start-Gcli2ApiService }
+                Press-Any-Key
+            }
+            "3" { Toggle-Gcli2ApiAutostart }
+            "4" { Uninstall-Gcli2Api }
+            "5" {
+                try {
+                    Start-Process "http://127.0.0.1:7861"
+                } catch {
+                    Write-Error "无法自动打开浏览器。"
+                }
+            }
+            "0" { return }
+            default { Write-Warning "输入无效，请按提示重试。"; Start-Sleep 1 }
+        }
+    }
+}
+
+function Show-STConfigMenu {
+    while ($true) {
+        Clear-Host
+        Write-Header "酒馆配置管理"
+        if (-not (Test-Path (Join-Path $ST_Dir "config.yaml"))) {
+            Write-Warning "未找到 config.yaml，请先部署酒馆。"
+            Press-Any-Key; return
+        }
+
+        $currPort = Get-STConfigValue "port"
+        $currAuth = Get-STConfigValue "basicAuthMode"
+        $currUser = Get-STConfigValue "enableUserAccounts"
+        $currListen = Get-STConfigValue "listen"
+        $currServerPlugins = Get-STConfigValue "enableServerPlugins"
+        $currExtensionsAutoUpdate = Get-STNestedConfigValue "extensions" "autoUpdate"
+        $currServerPluginsAutoUpdate = Get-STConfigValue "enableServerPluginsAutoUpdate"
+        $currHeapLimit = Get-STStartHeapLimit
+
+        $isSingleUser = ($currAuth -eq "true" -and $currUser -eq "false")
+        $isMultiUser = ($currAuth -eq "false" -and $currUser -eq "true")
+        $isNoAuth = ($currAuth -eq "false" -and $currUser -eq "false")
+
+        $modeText = "未知"
+        if ($isNoAuth) { $modeText = "默认 (无账密)" }
+        elseif ($isSingleUser) { $modeText = "单用户 (基础账密)" }
+        elseif ($isMultiUser) { $modeText = "多用户 (独立账户)" }
+
+        Write-Host "      当前端口: " -NoNewline; Write-Host "$currPort" -ForegroundColor Green
+        Write-Host "      当前模式: " -NoNewline; Write-Host "$modeText" -ForegroundColor Green
+        if ($isSingleUser) {
+            $u = Get-STNestedConfigValue "basicAuthUser" "username"
+            $p = Get-STNestedConfigValue "basicAuthUser" "password"
+            Write-Host "      当前账密: " -NoNewline; Write-Host "$u / $p" -ForegroundColor DarkGray
+        }
+        Write-Host "      局域网访问: " -NoNewline
+        if ($currListen -eq "true") { Write-Host "已开启" -ForegroundColor Green } else { Write-Host "已关闭" -ForegroundColor Red }
+        Write-Host "      后端插件: " -NoNewline
+        if ($currServerPlugins -eq "true") { Write-Host "已开启" -ForegroundColor Green } else { Write-Host "已关闭" -ForegroundColor Red }
+        Write-Host "      前端自动更新: " -NoNewline
+        if ($currExtensionsAutoUpdate -eq "true") { Write-Host "已开启" -ForegroundColor Green } else { Write-Host "已关闭" -ForegroundColor Red }
+        Write-Host "      后端自动更新(无法启动时建议关闭): " -NoNewline
+        if ($currServerPluginsAutoUpdate -eq "true") { Write-Host "已开启" -ForegroundColor Green } else { Write-Host "已关闭" -ForegroundColor Red }
+        Write-Host "      启动内存上限: " -NoNewline
+        if ([string]::IsNullOrWhiteSpace($currHeapLimit)) { Write-Host "默认" -ForegroundColor Yellow } else { Write-Host "$currHeapLimit MB" -ForegroundColor Green }
+
+        Write-Host "`n      [1] " -NoNewline; Write-Host "修改端口号" -ForegroundColor Cyan
+        Write-Host "      [2] " -NoNewline; Write-Host "切换为：默认无账密模式" -ForegroundColor Cyan
+        
+        Write-Host "      [3] " -NoNewline
+        if ($isSingleUser) { Write-Host "修改单用户账密" -ForegroundColor Cyan } else { Write-Host "切换为：单用户账密模式" -ForegroundColor Cyan }
+        
+        Write-Host "      [4] " -NoNewline; Write-Host "切换为：多用户账密模式" -ForegroundColor Cyan
+        
+        Write-Host "      [5] " -NoNewline
+        if ($currListen -eq "true") { Write-Host "关闭局域网访问" -ForegroundColor Red } else { Write-Host "允许局域网访问 (需开启账密)" -ForegroundColor Yellow }
+        Write-Host "      [6] " -NoNewline
+        if ($currServerPlugins -eq "true") { Write-Host "关闭后端插件" -ForegroundColor Red } else { Write-Host "开启后端插件" -ForegroundColor Yellow }
+        Write-Host "      [7] " -NoNewline
+        if ($currExtensionsAutoUpdate -eq "true") { Write-Host "关闭前端扩展自动更新" -ForegroundColor Red } else { Write-Host "开启前端扩展自动更新" -ForegroundColor Yellow }
+        Write-Host "      [8] " -NoNewline
+        if ($currServerPluginsAutoUpdate -eq "true") { Write-Host "关闭后端插件自动更新(无法启动时建议关闭)" -ForegroundColor Red } else { Write-Host "开启后端插件自动更新(无法启动时建议关闭)" -ForegroundColor Yellow }
+        Write-Host "      [9] " -NoNewline; Write-Host "OOM 内存修复(仅报错时使用)" -ForegroundColor Cyan
+        
+        Write-Host "`n      [0] " -NoNewline; Write-Host "返回主菜单" -ForegroundColor Cyan
+
+        $choice = Read-MenuPrompt -Allowed "0-9"
+        switch ($choice) {
+            "1" {
+                $newPort = Read-TextPrompt -Label "端口号" -Hint "1024-65535"
+                if ($newPort -match '^\d+$' -and [int]$newPort -ge 1024 -and [int]$newPort -le 65535) {
+                    if (Update-STConfigValue "port" $newPort) {
+                        Write-Success "端口已修改为 $newPort"
+                        Write-Warning "设置将在重启酒馆后生效。"
+                    }
+                } else { Write-Error "请输入 1024-65535。" }
+                Press-Any-Key
+            }
+            "2" {
+                Update-STConfigValue "basicAuthMode" "false" | Out-Null
+                Update-STConfigValue "enableUserAccounts" "false" | Out-Null
+                Update-STConfigValue "listen" "false" | Out-Null
+                Write-Success "已切换为默认无账密模式 (局域网访问已同步关闭)。"
+                Write-Warning "设置将在重启酒馆后生效。"
+                Press-Any-Key
+            }
+            "3" {
+                $u = Read-TextPrompt -Label "用户名" -Required $true
+                $p = Read-TextPrompt -Label "密码" -Required $true
+                if ([string]::IsNullOrWhiteSpace($u) -or [string]::IsNullOrWhiteSpace($p)) {
+                    Write-Error "不能为空，请重试。"
+                } else {
+                    Update-STConfigValue "basicAuthMode" "true" | Out-Null
+                    Update-STConfigValue "enableUserAccounts" "false" | Out-Null
+                    Update-STNestedConfigValue "basicAuthUser" "username" "`"$u`"" | Out-Null
+                    Update-STNestedConfigValue "basicAuthUser" "password" "`"$p`"" | Out-Null
+                    Write-Success "单用户账密配置已更新。"
+                    Write-Warning "设置将在重启酒馆后生效。"
+                }
+                Press-Any-Key
+            }
+            "4" {
+                Update-STConfigValue "basicAuthMode" "false" | Out-Null
+                Update-STConfigValue "enableUserAccounts" "true" | Out-Null
+                Update-STConfigValue "enableDiscreetLogin" "true" | Out-Null
+                Write-Success "已切换为多用户账密模式。"
+                Write-Host "`n【重要提示】" -ForegroundColor Yellow
+                Write-Host "请在启动酒馆后，进入 [用户设置] -> [管理员面板] 设置管理员密码，否则多用户模式可能无法正常工作。" -ForegroundColor Cyan
+                Write-Warning "设置将在重启酒馆后生效。"
+                Press-Any-Key
+            }
+            "5" {
+                if ($currListen -eq "true") {
+                    Update-STConfigValue "listen" "false" | Out-Null
+                    Write-Success "局域网访问已关闭。"
+                    Write-Warning "设置将在重启酒馆后生效。"
+                } else {
+                    # 检查是否开启了账密
+                    if ($isNoAuth) {
+                        Write-Warning "局域网访问必须开启账密模式！"
+                        if (Read-YesNoPrompt -Label "自动开启单用户账密模式" -DefaultYes $true) {
+                            $u = Read-TextPrompt -Label "用户名" -Required $true
+                            $p = Read-TextPrompt -Label "密码" -Required $true
+                            if ([string]::IsNullOrWhiteSpace($u) -or [string]::IsNullOrWhiteSpace($p)) {
+                                Write-Warning "不能为空，操作已取消。"
+                                Press-Any-Key; continue
+                            }
+                            Update-STConfigValue "basicAuthMode" "true" | Out-Null
+                            Update-STNestedConfigValue "basicAuthUser" "username" "`"$u`"" | Out-Null
+                            Update-STNestedConfigValue "basicAuthUser" "password" "`"$p`"" | Out-Null
+                        } else {
+                            Write-Warning "操作已取消。"
+                            Start-Sleep -Seconds 1; continue
+                        }
+                    }
+                    
+                    # 开启监听
+                    Update-STConfigValue "listen" "true" | Out-Null
+                    
+                    # 获取本机IP并加入白名单
+                    # 过滤 127.x.x.x (回环) 和 169.254.x.x (APIPA/不可用)
+                    $ips = Get-NetIPAddress -AddressFamily IPv4 | Where-Object {
+                        $_.IPAddress -notmatch '^127\.' -and
+                        $_.IPAddress -notmatch '^169\.254\.'
+                    }
+                    
+                    $validIps = New-Object System.Collections.Generic.List[object]
+                    foreach ($ipObj in $ips) {
+                        # 获取物理网卡详情，用于精准排除虚拟网卡
+                        $adapter = Get-NetAdapter -InterfaceAlias $ipObj.InterfaceAlias -ErrorAction SilentlyContinue
+                        if ($null -eq $adapter) { continue }
+                        
+                        # 排除常见的虚拟网卡 (通过名称或描述)
+                        if ($adapter.Name -match 'VirtualBox|VMware|Pseudo|Teredo|6to4|Loopback') { continue }
+                        if ($adapter.InterfaceDescription -match 'Virtual|WSL|Docker|Hyper-V|VPN|ZeroTier|Tailscale') { continue }
+                        
+                        $validIps.Add(@{ IPObj = $ipObj; Adapter = $adapter })
+                    }
+
+                    if ($validIps.Count -gt 0) {
+                        Write-Header "检测到以下局域网地址："
+                        foreach ($item in $validIps) {
+                            $ipObj = $item.IPObj
+                            $adapter = $item.Adapter
+                            $ip = $ipObj.IPAddress
+                            
+                            # 识别网卡类型
+                            $typeLabel = "[未知]"
+                            if ($adapter.Name -like "*Microsoft Wi-Fi Direct Virtual Adapter*") { $typeLabel = "[本机热点]" }
+                            elseif ($adapter.MediaType -eq "802.3" -or $adapter.Name -like "*Ethernet*") { $typeLabel = "[有线网络]" }
+                            elseif ($adapter.MediaType -eq "Native 802.11" -or $adapter.Name -like "*Wi-Fi*") { $typeLabel = "[WiFi]" }
+
+                            # 动态计算子网网段 (支持全球各种子网掩码)
+                            $prefixLength = $ipObj.PrefixLength
+                            if ($ip -match '^(\d+\.\d+\.\d+\.\d+)') {
+                                $subnet = "$($Matches[1])/$prefixLength"
+                                if (Add-STWhitelistEntry $subnet) {
+                                    Write-Host "  ✓ " -NoNewline; Write-Host "$typeLabel " -ForegroundColor Green -NoNewline; Write-Host "已将网段 $subnet 加入白名单"
+                                }
+                            }
+                            Write-Host "      访问地址: " -NoNewline; Write-Host "http://$($ip):$currPort" -ForegroundColor Cyan
+                        }
+                        Write-Host "`n选择建议：" -ForegroundColor Yellow
+                        Write-Host "  - " -NoNewline; Write-Host "[有线网络/WiFi] " -ForegroundColor Green -NoNewline; Write-Host ": 适用于其他设备通过 " -NoNewline; Write-Host "路由器 " -ForegroundColor Cyan -NoNewline; Write-Host "或 " -NoNewline; Write-Host "他人热点 " -ForegroundColor Cyan -NoNewline; Write-Host "与这台电脑处于同一局域网时访问。"
+                        Write-Host "  - " -NoNewline; Write-Host "[本机热点] " -ForegroundColor Green -NoNewline; Write-Host ": 适用于其他设备直接连接了 " -NoNewline; Write-Host "这台电脑开启的移动热点 " -ForegroundColor Cyan -NoNewline; Write-Host "时访问。"
+                        Write-Host "  - " -NoNewline; Write-Host "提示: " -ForegroundColor Yellow -NoNewline; Write-Host "若有多个地址，请优先尝试 " -NoNewline; Write-Host "192.168 " -ForegroundColor Green -NoNewline; Write-Host "开头的地址。"
+
+                        Write-Success "`n局域网访问功能已配置完成。"
+                        Write-Warning "设置将在重启酒馆后生效。"
+                    } else {
+                        Write-Error "未能检测到有效的局域网 IP 地址。"
+                    }
+                }
+                Press-Any-Key
+            }
+            "6" {
+                if ($currServerPlugins -eq "true") {
+                    Update-STConfigValue "enableServerPlugins" "false" | Out-Null
+                    Write-Success "后端插件已关闭。"
+                } else {
+                    Update-STConfigValue "enableServerPlugins" "true" | Out-Null
+                    Write-Success "后端插件已开启。"
+                }
+                Write-Warning "设置将在重启酒馆后生效。"
+                Press-Any-Key
+            }
+            "7" {
+                if ($currExtensionsAutoUpdate -eq "true") {
+                    if (Set-STNestedBooleanValue "extensions" "autoUpdate" $false) {
+                        Write-Success "前端扩展自动更新已关闭。"
+                    } else {
+                        Write-Error "前端扩展自动更新写入失败。"
+                    }
+                } else {
+                    if (Set-STNestedBooleanValue "extensions" "autoUpdate" $true) {
+                        Write-Success "前端扩展自动更新已开启。"
+                    } else {
+                        Write-Error "前端扩展自动更新写入失败。"
+                    }
+                }
+                Write-Warning "设置将在重启酒馆后生效。"
+                Press-Any-Key
+            }
+            "8" {
+                if ($currServerPluginsAutoUpdate -eq "true") {
+                    if (Set-STRootBooleanValue "enableServerPluginsAutoUpdate" $false) {
+                        Write-Success "后端插件自动更新已关闭。"
+                    } else {
+                        Write-Error "后端插件自动更新写入失败。"
+                    }
+                } else {
+                    if (Set-STRootBooleanValue "enableServerPluginsAutoUpdate" $true) {
+                        Write-Success "后端插件自动更新已开启。"
+                    } else {
+                        Write-Error "后端插件自动更新写入失败。"
+                    }
+                }
+                Write-Warning "设置将在重启酒馆后生效。"
+                Press-Any-Key
+            }
+            "9" { Show-STOomMemoryMenu }
+            "0" { return }
+            default { Write-Warning "输入无效，请按提示重试。"; Start-Sleep 1 }
+        }
+    }
+}
+
+function Show-ExtraFeaturesMenu {
+    while ($true) {
+        Clear-Host
+        Write-Header "实验室"
+        Write-Host "      [01] " -NoNewline; Write-Host "gcli2api 管理" -ForegroundColor Cyan
+        Write-Host "      [02] " -NoNewline; Write-Host "Luker 管理" -ForegroundColor Cyan
+        Write-Host "      [03] " -NoNewline; Write-Host "酒馆配置管理" -ForegroundColor Cyan
+        Write-Host "      [09] " -NoNewline; Write-Host "获取 AI Studio 凭证" -ForegroundColor Cyan
+        Write-Host "`n      [00] " -NoNewline; Write-Host "返回主菜单" -ForegroundColor Cyan
+        $choice = Read-MenuPrompt -Allowed "0/1/2/3/9"
+        switch ($choice) {
+            "1" { Show-Gcli2ApiMenu }
+            "2" { Show-LukerManagementMenu }
+            "3" { Show-STConfigMenu }
+            "9" { Get-AiStudioToken }
+            "0" { return }
+            default { Write-Warning "输入无效，请按提示重试。"; Start-Sleep 1 }
+        }
+    }
+}
+
+# --- 补全缺失的核心功能函数 ---
+
+function Open-HelpDocs {
+    Clear-Host
+    Write-Header "查看帮助文档"
+    Write-Host "文档网址: "
+    Write-Host $HelpDocsUrl -ForegroundColor Cyan
+    Write-Host "`n"
+    try {
+        Start-Process $HelpDocsUrl
+        Write-Success "已尝试在浏览器中打开，若未自动跳转请手动复制上方网址。"
+    } catch {
+        Write-Warning "无法自动打开浏览器。"
+    }
+    Press-Any-Key
+}
+
+function Download-FileWithHttpClient {
+    param(
+        [Parameter(Mandatory=$true)] [string]$Url,
+        [Parameter(Mandatory=$true)] [string]$DestPath
+    )
+    $client = New-Object System.Net.Http.HttpClient
+    $client.Timeout = [TimeSpan]::FromMinutes(10)
+    
+    try {
+        $response = $client.GetAsync($Url, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
+        $response.EnsureSuccessStatusCode() | Out-Null
+
+        $totalBytes = $response.Content.Headers.ContentLength
+        $readChunkSize = 8192
+        $buffer = New-Object byte[] $readChunkSize
+        $totalRead = 0
+
+        $stream = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+        $fileStream = [System.IO.File]::Create($DestPath)
+
+        do {
+            $bytesRead = $stream.Read($buffer, 0, $readChunkSize)
+            $fileStream.Write($buffer, 0, $bytesRead)
+            $totalRead += $bytesRead
+            
+            if ($totalBytes -gt 0) {
+                $percent = ($totalRead / $totalBytes) * 100
+                $receivedMB = $totalRead / 1MB
+                $totalMB = $totalBytes / 1MB
+                $statusText = "下载中: {0:N2} MB / {1:N2} MB ({2:N0}%)" -f $receivedMB, $totalMB, $percent
+                Write-Progress -Activity "正在下载文件" -Status $statusText -PercentComplete $percent
+            } else {
+                $receivedMB = $totalRead / 1MB
+                $statusText = "下载中: {0:N2} MB" -f $receivedMB
+                Write-Progress -Activity "正在下载文件" -Status $statusText
+            }
+        } while ($bytesRead -gt 0)
+        
+        Write-Progress -Activity "正在下载文件" -Completed
+    } finally {
+        if ($stream) { $stream.Dispose() }
+        if ($fileStream) { $fileStream.Dispose() }
+        if ($client) { $client.Dispose() }
+    }
+}
+
+function Get-AiStudioToken {
+    Clear-Host
+    Write-Header "获取 AI Studio 凭证"
+
+    if (-not (Check-Command "git") -or -not (Check-Command "node")) {
+        Write-Error "未检测到 Git 或 Node.js，无法继续。"
+        Write-Warning "请先在主菜单选择 [首次部署] 或手动安装这些依赖。"
+        Press-Any-Key
+        return
+    }
+    Write-Success "环境检查通过 (Git, Node.js 已安装)。"
+
+    $targetGitUrl = "https://github.com/Ellinav/ais2api.git"
+    $targetFileUrl = "https://github.com/daijro/camoufox/releases/download/v135.0.1-beta.24/camoufox-135.0.1-beta.24-win.x86_64.zip"
+    
+    $needClone = -not (Test-Path $ais2apiDir)
+    $needDownload = -not (Test-Path $camoufoxExe)
+    
+    if ($needClone -or $needDownload) {
+        $routeGitUrl = if ($needClone) { $targetGitUrl } else { $null }
+        $routeFileUrl = if ($needDownload) { $targetFileUrl } else { $null }
+        $selectedRoute = Resolve-DownloadRoute -OperationName "准备 AI Studio 工具链" -GitUrl $routeGitUrl -FileUrl $routeFileUrl
+        if (-not $selectedRoute) {
+            Write-Error "未选择线路或操作取消。"
+            Press-Any-Key
+            return
+        }
+        
+        if ($needClone) {
+            Write-Warning "正在克隆 ais2api 项目..."
+            if (-not (Invoke-GitWithProgress -OperationName "克隆 ais2api 项目" -GitArgs @('clone', '--progress', $selectedRoute.GitUrl, $ais2apiDir))) {
+                if (Test-GitLastOutput "Failed to connect to .* port .*|Could not connect to server|Connection timed out|Could not resolve host") {
+                    Write-GitNetworkTroubleshooting
+                }
+                Write-Error "克隆失败！Git输出:`n$(Get-GitLastOutputTail -Lines 8)"
+                Press-Any-Key; return
+            }
+        }
+        
+        if ($needDownload) {
+            if (-not (Test-Path $camoufoxDir)) { New-Item -Path $camoufoxDir -ItemType Directory | Out-Null }
+            $zipPath = Join-Path $ais2apiDir "camoufox.zip"
+            Write-Warning "正在下载 Camoufox 内核..."
+            try {
+                Download-FileWithHttpClient -Url $selectedRoute.FileUrl -DestPath $zipPath
+                Write-Success "下载完成，正在解压..."
+                Expand-Archive -Path $zipPath -DestinationPath $camoufoxDir -Force
+                Remove-Item $zipPath -Force
+                
+                if (-not (Test-Path $camoufoxExe)) {
+                    $nestedExe = Get-ChildItem -Path $camoufoxDir -Filter "camoufox.exe" -Recurse | Select-Object -First 1
+                    if ($nestedExe) {
+                        $parentDir = $nestedExe.Directory.FullName
+                        Get-ChildItem -Path $parentDir | Move-Item -Destination $camoufoxDir -Force
+                    }
+                }
+                Write-Success "Camoufox 配置完成。"
+            } catch {
+                Write-Error "下载或解压失败: $($_.Exception.Message)"
+                Press-Any-Key; return
+            }
+        }
+    }
+
+    Set-Location $ais2apiDir
+    if (-not (Test-Path "node_modules")) {
+        Write-Warning "正在安装依赖 (npm install)..."
+        npm install
+        if ($LASTEXITCODE -ne 0) { Write-Error "依赖安装失败！"; Set-Location $ScriptBaseDir; Press-Any-Key; return }
+    }
+
+    while ($true) {
+        Clear-Host
+        Write-Header "准备获取凭证"
+        Write-Host "即将启动浏览器..." -ForegroundColor Cyan
+        Write-Host "1. 请在弹出的浏览器中登录您的谷歌账号。" -ForegroundColor Yellow
+        Write-Host "2. 登录成功看到 AI Studio 页面后，请保持浏览器开启。" -ForegroundColor Yellow
+        Write-Host "3. 回到本窗口按回车，即可自动获取凭证并关闭浏览器。" -ForegroundColor Yellow
+        Write-Host "4. 凭证将保存在 ais2api\single-line-auth 文件中。" -ForegroundColor Green
+        
+        node save-auth.js
+        Write-Success "操作结束。"
+        
+        Get-Process -Name "camoufox" -ErrorAction SilentlyContinue | Stop-Process -Force
+
+        while ($true) {
+            Write-Host "`n后续操作：" -ForegroundColor Cyan
+            Write-Host " [1] 继续获取 (切换账号)" -ForegroundColor Green
+            Write-Host " [2] 打开凭证文件" -ForegroundColor Yellow
+            Write-Host " [0] 返回上一级" -ForegroundColor Red
+            $next = Read-MenuPrompt -Allowed "0/1/2"
+            if ($next -eq '1') { break }
+            if ($next -eq '2') {
+                $authFile = Join-Path $ais2apiDir "single-line-auth"
+                if (Test-Path $authFile) { Invoke-Item $authFile } else { Write-Warning "凭证文件不存在。" }
+            }
+            if ($next -eq '0') { Set-Location $ScriptBaseDir; return }
+            if ($next -notin @('0', '1', '2')) { Write-Warning "输入无效，请按提示重试。" }
+        }
+    }
+}
+
+function Start-Luker {
+    Clear-Host
+    Write-Header "启动 Luker"
+
+    $targetRunDir = ""
+    $isBranchMode = $false
+
+    if (Test-Path $Luker_Dir) {
+        $targetRunDir = $Luker_Dir
+    } elseif (Test-Path $ST_Dir) {
+        $currentMode = Get-STCurrentMode
+        if ($currentMode -eq "luker") {
+            $targetRunDir = $ST_Dir
+            $isBranchMode = $true
+        } else {
+            Write-Warning "检测到当前酒馆目录处于【原版酒馆模式】，未处于 Luker 分支！"
+            Write-Host "如需在酒馆目录中运行 Luker，请先使用 [14] 切换为 Luker 分支；" -ForegroundColor Cyan
+            Write-Host "或者使用 [13] 进行 Luker 独立首次部署。`n" -ForegroundColor Cyan
+            if (-not (Read-YesNoPrompt -Label "是否仍尝试在当前目录启动" -DefaultYes $false)) {
+                Write-Warning "已取消启动。"
+                Press-Any-Key
+                return
+            }
+            $targetRunDir = $ST_Dir
+        }
+    } else {
+        Write-Warning "未检测到 Luker 或酒馆安装目录，请先进行部署。"
+        Press-Any-Key
+        return
+    }
+
+    $startBatPath = Join-Path $targetRunDir "start.bat"
+    if (-not (Test-Path $startBatPath)) {
+        Write-Warning "在 $targetRunDir 未找到 start.bat。"
+        Press-Any-Key
+        return
+    }
+
+    Set-Location $targetRunDir
+    Write-Host "正在配置 NPM 镜像并准备启动环境..."
+    npm config set registry https://registry.npmmirror.com
+
+    Write-Success "环境准备就绪，即将在新窗口中启动 Luker 服务..."
+    Write-Warning "首次启动或更新后会自动安装依赖，耗时可能较长，请耐心等待..."
+    Write-Host "Luker 将在新窗口中运行，请勿关闭该窗口。" -ForegroundColor Cyan
+    Write-Host "如需停止服务，请直接关闭运行窗口。" -ForegroundColor Cyan
+
+    Start-Sleep -Seconds 2
+    Start-Process -FilePath $startBatPath -WorkingDirectory $targetRunDir
+
+    Write-Success "Luker 已在新窗口中启动！"
+    Write-Host "提示：Luker 服务将在新窗口中运行，请保持该窗口开启。" -ForegroundColor Green
+    Write-Host "      本助手窗口现在可以关闭，或按任意键返回主菜单。" -ForegroundColor Cyan
+    Press-Any-Key
+}
+
+function Switch-STLukerMode {
+    Clear-Host
+    Write-Header "原版酒馆 ↔ Luker 模式无缝切换"
+    if (-not (Test-Path (Join-Path $ST_Dir ".git"))) {
+        Write-Error "酒馆目录不存在或不是有效的 Git 仓库！"
+        Press-Any-Key
+        return
+    }
+
+    Set-Location $ST_Dir
+    $currentMode = Get-STCurrentMode
+    $currentBranch = (git rev-parse --abbrev-ref HEAD 2>$null)
+    if ([string]::IsNullOrWhiteSpace($currentBranch)) { $currentBranch = "未知" }
+
+    Write-Host "      当前检测状态: " -NoNewline
+    if ($currentMode -eq "luker") {
+        Write-Host "【Luker 模式】" -ForegroundColor Green
+    } else {
+        Write-Host "【原版酒馆模式】" -ForegroundColor Cyan
+    }
+    Write-Host "      当前所在分支: $currentBranch" -ForegroundColor Yellow
+    Write-Host "      酒馆目录路径: $ST_Dir`n" -ForegroundColor Cyan
+    Write-Host "[重要提示] 模式切换前建议提前做好数据备份！`n" -ForegroundColor Yellow
+
+    if ($currentMode -eq "luker") {
+        Write-Host "      [1] " -NoNewline; Write-Host "回退切换至【原版酒馆 (SillyTavern)】" -ForegroundColor Cyan
+        Write-Host "      [2] " -NoNewline; Write-Host "刷新拉取 Luker 最新代码并重装依赖" -ForegroundColor Green
+        Write-Host "      [0] 返回上一级`n"
+        $choice = Read-MenuPrompt -Allowed "0-2"
+        switch ($choice) {
+            "1" {
+                Write-Warning "正在切换回原版酒馆 release 分支..."
+                git switch release 2>$null
+                if ($LASTEXITCODE -ne 0) {
+                    git checkout release 2>$null
+                    if ($LASTEXITCODE -ne 0) {
+                        git checkout main 2>$null
+                        if ($LASTEXITCODE -ne 0) { git checkout master 2>$null }
+                    }
+                }
+                if (Read-YesNoPrompt -Label "是否顺便拉取并更新原版酒馆到最新版本" -DefaultYes $false) {
+                    Write-Warning "正在拉取原版酒馆最新代码..."
+                    git pull
+                } else {
+                    Write-Host "已跳过更新，保持您原有的酒馆版本代码不变。" -ForegroundColor Green
+                }
+                Write-Host "正在配置 NPM 镜像并校验安装依赖..."
+                npm config set registry https://registry.npmmirror.com
+                npm install --no-audit --no-fund --omit=dev
+                if ($LASTEXITCODE -ne 0) {
+                    npm install --legacy-peer-deps --no-audit --no-fund
+                }
+                Write-Success "已成功切换回原版酒馆模式！"
+                Press-Any-Key
+            }
+            "2" {
+                Write-Warning "正在拉取 Luker 最新代码..."
+                git fetch luker 2>$null
+                git pull luker release 2>$null
+                if ($LASTEXITCODE -ne 0) { git pull }
+                Write-Host "正在更新依赖..."
+                npm config set registry https://registry.npmmirror.com
+                npm install --no-audit --no-fund
+                if ($LASTEXITCODE -ne 0) {
+                    npm install --legacy-peer-deps --no-audit --no-fund
+                }
+                Write-Success "Luker 分支更新完毕！"
+                Press-Any-Key
+            }
+            "0" { return }
+        }
+    } else {
+        Write-Host "      [1] " -NoNewline; Write-Host "切换至【Luker (funnycups/Luker)】" -ForegroundColor Green
+        Write-Host "      [0] 返回上一级`n"
+        $choice = Read-MenuPrompt -Allowed "0-1"
+        switch ($choice) {
+            "1" {
+                Write-Warning "正在配置 Luker 远程仓库源..."
+                $remotes = (git remote)
+                if ($remotes -notcontains "luker") {
+                    $lukerRepoUrl = "https://github.com/funnycups/Luker.git"
+                    git remote add luker $lukerRepoUrl 2>$null
+                    if ($LASTEXITCODE -ne 0) {
+                        git remote set-url luker $lukerRepoUrl 2>$null
+                    }
+                }
+
+                $selectedRoute = Resolve-DownloadRoute -OperationName "获取 Luker 远程分支" -GitUrl "https://github.com/funnycups/Luker.git"
+                if ($selectedRoute) {
+                    git remote set-url luker $selectedRoute.GitUrl 2>$null
+                }
+
+                Write-Warning "正在获取 Luker 远程分支信息 (git fetch luker)..."
+                if (-not (Invoke-GitWithProgress -OperationName "获取 Luker 分支" -GitArgs @('fetch', 'luker'))) {
+                    Write-Warning "fetch 遇到问题，尝试直接切换..."
+                }
+
+                Write-Warning "正在切换至 luker 分支..."
+                git switch luker 2>$null
+                if ($LASTEXITCODE -ne 0) {
+                    git checkout luker 2>$null
+                    if ($LASTEXITCODE -ne 0) {
+                        git switch -c luker --track luker/release 2>$null
+                        if ($LASTEXITCODE -ne 0) {
+                            git checkout -b luker luker/release 2>$null
+                            if ($LASTEXITCODE -ne 0) { git checkout -b luker 2>$null }
+                        }
+                    }
+                }
+
+                Write-Host "正在配置 NPM 镜像并安装 Luker 依赖..."
+                npm config set registry https://registry.npmmirror.com
+                npm install --no-audit --no-fund
+                if ($LASTEXITCODE -ne 0) {
+                    npm install --legacy-peer-deps --no-audit --no-fund
+                }
+
+                if (Test-Path "package.json") {
+                    $pkgContent = Get-Content "package.json" -Raw
+                    if ($pkgContent -match '"build"') {
+                        Write-Warning "正在执行构建 (npm run build)..."
+                        npm run build
+                    }
+                }
+
+                Write-Success "已成功切换至 Luker 模式！"
+                Press-Any-Key
+            }
+            "0" { return }
+        }
+    }
+}
+
+function Install-Luker {
+    Clear-Host
+    Write-Header "Luker 首次部署向导"
+
+    Write-Header "1/3: 检查核心依赖"
+    if (-not (Check-Command "git") -or -not (Check-Command "node")) {
+        Write-Warning "错误: Git 或 Node.js 未安装。即将为您展示帮助文档..."
+        Start-Sleep -Seconds 3; Open-HelpDocs; return
+    }
+    Write-Success "核心依赖 (Git, Node.js) 已找到。"
+
+    Write-Header "2/3: 下载 Luker 主程序"
+    if (Test-Path $Luker_Dir) {
+        Write-Warning "目录 $Luker_Dir 已存在，跳过下载。"
+    } else {
+        $selectedRoute = Resolve-DownloadRoute -OperationName "下载 Luker 主程序" -GitUrl "https://github.com/funnycups/Luker.git"
+        if (-not $selectedRoute) {
+            Write-Error "未能选定可用下载线路。"
+            Press-Any-Key
+            return
+        }
+
+        Write-Warning "正在使用线路 [$($selectedRoute.Host)] 下载 Luker..."
+        if (-not (Invoke-GitWithProgress -OperationName "下载 Luker 主程序" -GitArgs @('-c', 'credential.helper=', 'clone', '--progress', '--depth', '1', $selectedRoute.GitUrl, $Luker_Dir))) {
+            if (Test-GitLastOutput "Permission denied") {
+                Write-Error "权限不足，无法创建目录。请尝试以【管理员身份】运行本脚本。"
+                Press-Any-Key
+                exit
+            }
+            if (Test-GitLastOutput "Failed to connect to .* port .*|Could not connect to server|Connection timed out|Could not resolve host") {
+                Write-GitNetworkTroubleshooting
+            }
+            Write-Error "下载失败！Git输出:`n$(Get-GitLastOutputTail -Lines 8)"
+            if (Test-Path $Luker_Dir) { Remove-Item -Recurse -Force $Luker_Dir }
+            Press-Any-Key
+            return
+        }
+        Write-Success "Luker 源码下载完成。"
+    }
+
+    Write-Header "3/3: 配置 NPM 环境并安装依赖"
+    if (Test-Path $Luker_Dir) {
+        Set-Location $Luker_Dir
+        Write-Host "正在配置 NPM 镜像并安装依赖..."
+        npm config set registry https://registry.npmmirror.com
+        npm install --no-audit --no-fund
+        if ($LASTEXITCODE -ne 0) {
+            npm install --legacy-peer-deps --no-audit --no-fund
+        }
+
+        if (Test-Path "package.json") {
+            $pkgContent = Get-Content "package.json" -Raw
+            if ($pkgContent -match '"build"') {
+                Write-Warning "正在执行构建 (npm run build)..."
+                npm run build
+            }
+        }
+        Write-Success "Luker 依赖安装完成！"
+    }
+
+    Write-Host "`n"; Write-Success "Luker 部署完成！"; Write-Warning "即将进行首次启动..."; Start-Sleep -Seconds 3; Start-Luker
+}
+
+function Show-LukerManagementMenu {
+    while ($true) {
+        Clear-Host
+        Write-Header "Luker 管理"
+        $statusText = "未安装"
+        if (Test-Path $Luker_Dir) {
+            $statusText = "已安装 (独立目录)"
+        } elseif (Test-Path $ST_Dir) {
+            $currentMode = Get-STCurrentMode
+            if ($currentMode -eq "luker") {
+                $statusText = "已切换至酒馆 Luker 分支"
+            }
+        }
+
+        Write-Host "      当前状态: " -NoNewline
+        if ($statusText -like "*已*") {
+            Write-Host $statusText -ForegroundColor Green
+        } else {
+            Write-Host $statusText -ForegroundColor Red
+        }
+        Write-Host "      独立安装路径: $Luker_Dir`n" -ForegroundColor Cyan
+
+        Write-Host "      [1] " -NoNewline; Write-Host "启动 Luker" -ForegroundColor Green
+        Write-Host "      [2] " -NoNewline; Write-Host "原版酒馆 ↔ Luker 模式切换" -ForegroundColor Cyan
+        if (Test-Path $Luker_Dir) {
+            Write-Host "      [3] " -NoNewline; Write-Host "更新 Luker (独立版)" -ForegroundColor Cyan
+            Write-Host "      [4] " -NoNewline; Write-Host "重新安装依赖 (npm install)" -ForegroundColor Yellow
+            Write-Host "      [5] " -NoNewline; Write-Host "卸载 Luker (独立版)" -ForegroundColor Red
+        } else {
+            Write-Host "      [3] " -NoNewline; Write-Host "首次部署 Luker 独立版 (funnycups/Luker)" -ForegroundColor Green
+        }
+        Write-Host "      [0] " -NoNewline; Write-Host "返回上一级`n" -ForegroundColor Cyan
+
+        $allowed = if (Test-Path $Luker_Dir) { "0-5" } else { "0-3" }
+        $choice = Read-MenuPrompt -Allowed $allowed
+        switch ($choice) {
+            "1" { Start-Luker }
+            "2" { Switch-STLukerMode }
+            "3" {
+                if (Test-Path $Luker_Dir) {
+                    Set-Location $Luker_Dir
+                    Write-Warning "正在更新 Luker..."
+                    git pull
+                    npm config set registry https://registry.npmmirror.com
+                    npm install --no-audit --no-fund
+                    Write-Success "更新完成！"
+                    Press-Any-Key
+                } else {
+                    Install-Luker
+                }
+            }
+            "4" {
+                if (Test-Path $Luker_Dir) {
+                    Set-Location $Luker_Dir
+                    npm config set registry https://registry.npmmirror.com
+                    npm install --no-audit --no-fund
+                    Write-Success "依赖安装完成。"
+                    Press-Any-Key
+                }
+            }
+            "5" {
+                if (Test-Path $Luker_Dir) {
+                    if (Read-YesNoPrompt -Label "确定要删除 Luker 目录吗" -DefaultYes $false) {
+                        Remove-Item $Luker_Dir -Recurse -Force
+                        Write-Success "已卸载 Luker 独立版。"
+                        Press-Any-Key
+                    }
+                }
+            }
+            "0" { return }
+            default { Write-Warning "输入无效，请按提示重试。"; Start-Sleep 1 }
+        }
+    }
+}
+
+function Update-AssistantScript {
+    Clear-Host
+    Write-Header "更新咕咕助手脚本"
+
+    if (-not (Read-YesNoPrompt -Label "检查并更新咕咕助手脚本" -DefaultYes $true)) { return }
+
+    Write-Warning "正在从服务器获取最新版本..."
+    try {
+        Initialize-FirstPartySources
+        $newScriptContent = (Invoke-WebRequest -Uri $ScriptSelfUpdateUrl -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop).Content
+        if ([string]::IsNullOrWhiteSpace($newScriptContent)) { Write-ErrorExit "下载失败：脚本内容为空！" }
+
+        $newScriptContent = $newScriptContent.TrimStart([char]0xFEFF)
+
+        $currentScriptContent = (Get-Content -Path $PSCommandPath -Raw).TrimStart([char]0xFEFF)
+        if ($newScriptContent.Replace("`r`n", "`n").Trim() -eq $currentScriptContent.Replace("`r`n", "`n").Trim()) {
+            Write-Success "当前已是最新版本。"
+            Press-Any-Key; return
+        }
+
+        $newFile = Join-Path $ScriptBaseDir "pc-st.new.ps1"
+        $utf8WithBom = New-Object System.Text.UTF8Encoding($true)
+        [System.IO.File]::WriteAllText($newFile, $newScriptContent, $utf8WithBom)
+
+        $batchPath = Join-Path $ScriptBaseDir "upd.bat"
+        $starter = Join-Path $ScriptBaseDir "咕咕助手.bat"
+        $batchContent = @"
+@echo off
+title 正在更新咕咕助手...
+timeout /t 2 >nul
+:retry_del
+del /f /q "$PSCommandPath" >nul 2>&1
+if exist "$PSCommandPath" (
+    timeout /t 1 >nul
+    goto retry_del
+)
+move /y "$newFile" "$PSCommandPath" >nul
+start "" "$starter"
+del %0
+"@
+        [System.IO.File]::WriteAllText($batchPath, $batchContent, [System.Text.Encoding]::GetEncoding(936))
+
+        Write-Warning "助手即将重启以应用更新..."
+        Start-Process $batchPath; exit
+    } catch {
+        Write-Error "更新失败: $($_.Exception.Message)"
+        Write-Host "`n若自动更新失败，请前往博客 " -NoNewline; Write-Host "https://blog.qjyg.de" -ForegroundColor Cyan
+        Write-Host "重新下载脚本压缩包，并手动使用新下载的 " -NoNewline; Write-Host "咕咕助手.bat" -ForegroundColor Yellow -NoNewline; Write-Host " 和 " -NoNewline; Write-Host "pc-st.ps1" -ForegroundColor Yellow
+        Write-Host " 替换当前正在使用的同名文件。"
+        Press-Any-Key
+    }
+}
+
+# --- 脚本执行入口 ---
+
+function Check-ForUpdatesOnStart {
+    $jobScriptBlock = {
+        param($url, $flag, $path)
+        try {
+            $new = (Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 10).Content
+            if (-not [string]::IsNullOrWhiteSpace($new)) {
+               $new = $new.TrimStart([char]0xFEFF)
+                $old = (Get-Content -Path $path -Raw).TrimStart([char]0xFEFF)
+                if ($new.Replace("`r`n", "`n").Trim() -ne $old.Replace("`r`n", "`n").Trim()) {
+                    [System.IO.File]::Create($flag).Close()
+                } else {
+                    if (Test-Path $flag) { Remove-Item $flag -Force }
+                }
+            }
+        } catch {}
+    }
+    try {
+        Initialize-FirstPartySources
+        Start-Job -ScriptBlock $jobScriptBlock -ArgumentList $ScriptSelfUpdateUrl, $UpdateFlagFile, $PSCommandPath | Out-Null
+    } catch {}
+}
+
+Apply-Proxy
+Show-AgreementIfFirstRun
+Check-ForUpdatesOnStart
+git config --global --add safe.directory '*' | Out-Null
+
+function Invoke-PCFullBackup {
+    Clear-Host
+    Show-Header
+    Write-Host "  " -NoNewline; Write-Host "PC 全量环境与数据大打包" -ForegroundColor Cyan
+    Write-Host "  说明：此功能将完整打包当前目录下的全部文件与环境：" -ForegroundColor Yellow
+    Write-Host "    - 包含 Node 便携环境、Git 配置、启动脚本"
+    Write-Host "    - 包含 SillyTavern / Luker 完整源码与 node_modules"
+    Write-Host "    - 包含 用户数据 (data/)、聊天记录、世界书与配置"
+    Write-Host "  适合换电脑整机迁移或制作免配置独立运行包。`n" -ForegroundColor DarkCyan
+
+    if (-not (Read-YesNoPrompt -Label "确认开始执行 PC 全量大打包吗？" -DefaultYes $true)) {
+        Write-Warning "操作已取消。"
+        Press-Any-Key; return
+    }
+
+    $backupDir = Join-Path $ScriptBaseDir "backups"
+    if (-not (Test-Path $backupDir)) {
+        New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
+    }
+
+    $timestamp = (Get-Date).ToString("yyyyMMdd_HHmmss")
+    $archiveName = "st_pc_full_backup_${timestamp}.zip"
+    $targetZip = Join-Path $backupDir $archiveName
+
+    Write-Warning "正在打包压缩，由于包含完整环境，可能需要 1~3 分钟，请稍候..."
+    Write-Host "  输出路径: " -NoNewline; Write-Host "$targetZip" -ForegroundColor Cyan
+
+    try {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $tempStage = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
+        New-Item -ItemType Directory -Path $tempStage -Force | Out-Null
+
+        $items = Get-ChildItem -Path $ScriptBaseDir | Where-Object { $_.Name -ne "backups" -and $_.Name -ne ".git" -and -not $_.Name.EndsWith(".tmp") }
+        foreach ($item in $items) {
+            Copy-Item -Path $item.FullName -Destination (Join-Path $tempStage $item.Name) -Recurse -Force
+        }
+
+        if (Test-Path $targetZip) { Remove-Item $targetZip -Force }
+        [System.IO.Compression.ZipFile]::CreateFromDirectory($tempStage, $targetZip, [System.IO.Compression.CompressionLevel]::Optimal, $false)
+        Remove-Item -Path $tempStage -Recurse -Force -ErrorAction SilentlyContinue
+
+        if (Test-Path $targetZip) {
+            $fileSizeMB = [math]::Round(((Get-Item $targetZip).Length / 1MB), 2)
+            Write-Success "`n全量打包完成！"
+            Write-Host "  ----------------------------------------------------"
+            Write-Host "  ✔ 文件名称: " -NoNewline; Write-Host "$archiveName" -ForegroundColor Green
+            Write-Host "  ✔ 文件大小: " -NoNewline; Write-Host "${fileSizeMB} MB" -ForegroundColor Green
+            Write-Host "  ✔ 保存位置: " -NoNewline; Write-Host "$targetZip" -ForegroundColor Green
+            Write-Host "  ----------------------------------------------------"
+            if (Read-YesNoPrompt -Label "是否直接在资源管理器中打开备份文件夹？" -DefaultYes $true) {
+                Invoke-Item $backupDir
+            }
+        } else {
+            Write-Error "打包失败，未生成压缩包。"
+        }
+    } catch {
+        Write-Error "打包过程中发生错误: $($_.Exception.Message)"
+    }
+    Press-Any-Key
+}
+
+function Invoke-PCPrecisionBackup {
+    Clear-Host
+    Show-Header
+    Write-Host "  " -NoNewline; Write-Host "酒馆资产轻量精准打包" -ForegroundColor Cyan
+    Write-Host "  说明：仅提取酒馆核心资产并自动剥离 node_modules 等大文件：" -ForegroundColor Yellow
+    Write-Host "    - 用户数据 (data/ 包含角色卡、聊天记录、世界书、预设)"
+    Write-Host "    - 系统配置 (config.yaml / config/)"
+    Write-Host "    - 服务端插件 (plugins/)"
+    Write-Host "    - 前端第三方扩展 (public/scripts/extensions/)"
+    Write-Host "  体积小（通常仅数十兆），非常适合日常备份与跨平台迁移。`n" -ForegroundColor DarkCyan
+
+    $candidates = @()
+    if (Test-Path $ST_Dir) { $candidates += $ST_Dir }
+    if (Test-Path $LukerDir) { $candidates += $LukerDir }
+    if (Test-Path (Join-Path $ScriptBaseDir "package.json")) { $candidates += $ScriptBaseDir }
+
+    if ($candidates.Count -eq 0) {
+        Write-Error "未检测到已安装的 SillyTavern 或 Luker 目录！"
+        Press-Any-Key; return
+    }
+
+    $selectedDir = $candidates[0]
+    if ($candidates.Count -gt 1) {
+        Write-Host "  检测到多个酒馆实例，请选择要打包的目标："
+        for ($i = 0; $i -lt $candidates.Count; $i++) {
+            Write-Host "    [$($i + 1)] $($candidates[$i])"
+        }
+        Write-Host ""
+        $sel = Read-MenuPrompt -Allowed "1-$($candidates.Count)"
+        $selectedDir = $candidates[[int]$sel - 1]
+    }
+
+    Write-Host "  当前选定打包目录: " -NoNewline; Write-Host "$selectedDir`n" -ForegroundColor Cyan
+
+    $backupDir = Join-Path $ScriptBaseDir "backups"
+    if (-not (Test-Path $backupDir)) {
+        New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
+    }
+
+    $timestamp = (Get-Date).ToString("yyyyMMdd_HHmmss")
+    $archiveName = "sillytavern_data_backup_${timestamp}.zip"
+    $targetZip = Join-Path $backupDir $archiveName
+
+    $tempStage = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
+    $payloadDir = Join-Path $tempStage "payload"
+    New-Item -ItemType Directory -Path (Join-Path $payloadDir "config") -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $payloadDir "data") -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $payloadDir "plugins") -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $payloadDir "public") -Force | Out-Null
+
+    Write-Warning "正在提取核心数据与配置..."
+
+    # 1. 拷贝配置
+    if (Test-Path (Join-Path $selectedDir "config.yaml")) {
+        Copy-Item (Join-Path $selectedDir "config.yaml") (Join-Path $payloadDir "config/config.yaml") -Force
+    }
+    if (Test-Path (Join-Path $selectedDir "config")) {
+        Copy-Item (Join-Path $selectedDir "config/*") (Join-Path $payloadDir "config") -Recurse -Force
+    }
+
+    # 2. 拷贝数据
+    if (Test-Path (Join-Path $selectedDir "data")) {
+        Copy-Item (Join-Path $selectedDir "data/*") (Join-Path $payloadDir "data") -Recurse -Force
+    }
+
+    # 3. 拷贝插件
+    if (Test-Path (Join-Path $selectedDir "plugins")) {
+        Copy-Item (Join-Path $selectedDir "plugins/*") (Join-Path $payloadDir "plugins") -Recurse -Force
+    }
+
+    # 4. 拷贝扩展
+    $extDir = Join-Path $selectedDir "public/scripts/extensions"
+    if (Test-Path $extDir) {
+        $destExt = Join-Path $payloadDir "public/scripts/extensions"
+        New-Item -ItemType Directory -Path $destExt -Force | Out-Null
+        Copy-Item (Join-Path $extDir "*") $destExt -Recurse -Force
+    } elseif (Test-Path (Join-Path $selectedDir "extensions")) {
+        $destExt = Join-Path $payloadDir "public/scripts/extensions/third-party"
+        New-Item -ItemType Directory -Path $destExt -Force | Out-Null
+        Copy-Item (Join-Path $selectedDir "extensions/*") $destExt -Recurse -Force
+    }
+
+    # 统计数据
+    $charCount = (Get-ChildItem -Path (Join-Path $payloadDir "data") -Filter "*.png" -Recurse -ErrorAction SilentlyContinue).Count
+    $chatCount = (Get-ChildItem -Path (Join-Path $payloadDir "data") -Filter "*.jsonl" -Recurse -ErrorAction SilentlyContinue).Count
+
+    Write-Warning "正在压缩生成 ZIP 备份包 (角色卡: $charCount 张, 聊天记录: $chatCount 份)..."
+
+    try {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        if (Test-Path $targetZip) { Remove-Item $targetZip -Force }
+        [System.IO.Compression.ZipFile]::CreateFromDirectory($payloadDir, $targetZip, [System.IO.Compression.CompressionLevel]::Optimal, $false)
+        Remove-Item -Path $tempStage -Recurse -Force -ErrorAction SilentlyContinue
+
+        if (Test-Path $targetZip) {
+            $fileSizeMB = [math]::Round(((Get-Item $targetZip).Length / 1MB), 2)
+            Write-Success "`n精准数据打包成功！"
+            Write-Host "  ----------------------------------------------------"
+            Write-Host "  ✔ 文件名称: " -NoNewline; Write-Host "$archiveName" -ForegroundColor Green
+            Write-Host "  ✔ 文件大小: " -NoNewline; Write-Host "${fileSizeMB} MB" -ForegroundColor Green
+            Write-Host "  ✔ 资产统计: " -NoNewline; Write-Host "角色卡 $charCount 张 | 聊天记录 $chatCount 份" -ForegroundColor Green
+            Write-Host "  ✔ 保存位置: " -NoNewline; Write-Host "$targetZip" -ForegroundColor Green
+            Write-Host "  ----------------------------------------------------"
+            if (Read-YesNoPrompt -Label "是否直接在资源管理器中打开备份文件夹？" -DefaultYes $true) {
+                Invoke-Item $backupDir
+            }
+        } else {
+            Write-Error "打包失败，未生成压缩包。"
+        }
+    } catch {
+        Write-Error "打包失败: $($_.Exception.Message)"
+    }
+    Press-Any-Key
+}
+
+function Invoke-PCRestoreBackup {
+    Clear-Host
+    Show-Header
+    Write-Host "  " -NoNewline; Write-Host "解压与恢复备份包" -ForegroundColor Cyan
+
+    $backupDir = Join-Path $ScriptBaseDir "backups"
+    $foundFiles = @()
+    if (Test-Path $backupDir) {
+        $foundFiles = Get-ChildItem -Path $backupDir -Include "*.zip", "*.tar.gz", "*.tgz" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 15
+    }
+
+    $selectedFile = ""
+    if ($foundFiles.Count -gt 0) {
+        Write-Host "  请选择要恢复的备份包：`n"
+        for ($i = 0; $i -lt $foundFiles.Count; $i++) {
+            $item = $foundFiles[$i]
+            $sizeMB = [math]::Round(($item.Length / 1MB), 2)
+            Write-Host "    [$($i + 1)] " -NoNewline; Write-Host "$($item.Name)" -ForegroundColor Cyan -NoNewline; Write-Host " (${sizeMB} MB) -> " -NoNewline; Write-Host "$($item.FullName)" -ForegroundColor DarkGray
+        }
+        Write-Host "    [0] 手动输入文件完整路径`n"
+        $pick = Read-MenuPrompt -Allowed "0-$($foundFiles.Count)"
+        if ($pick -eq "0") {
+            $selectedFile = Read-Host "  请输入备份文件的绝对路径"
+        } else {
+            $selectedFile = $foundFiles[[int]$pick - 1].FullName
+        }
+    } else {
+        $selectedFile = Read-Host "  未在 backups 目录下检测到备份文件，请输入备份文件的完整路径"
+    }
+
+    if ([string]::IsNullOrWhiteSpace($selectedFile) -or -not (Test-Path $selectedFile)) {
+        Write-Error "文件不存在或路径无效: $selectedFile"
+        Press-Any-Key; return
+    }
+
+    Write-Host "`n  选定文件: " -NoNewline; Write-Host "$selectedFile" -ForegroundColor Cyan
+
+    $defaultDest = if (Test-Path $ST_Dir) { $ST_Dir } elseif (Test-Path $LukerDir) { $LukerDir } else { $ScriptBaseDir }
+    Write-Host "`n  请输入要解压还原到的目标路径："
+    Write-Host "  [直接回车默认使用: " -NoNewline; Write-Host "$defaultDest" -ForegroundColor Cyan -NoNewline; Write-Host "]"
+    $destDir = Read-Host "  目标路径"
+    if ([string]::IsNullOrWhiteSpace($destDir)) {
+        $destDir = $defaultDest
+    }
+
+    if (-not (Read-YesNoPrompt -Label "确认将备份解压还原到 $destDir 吗？" -DefaultYes $true)) {
+        Write-Warning "已取消恢复操作。"
+        Press-Any-Key; return
+    }
+
+    if (-not (Test-Path $destDir)) {
+        New-Item -ItemType Directory -Path $destDir -Force | Out-Null
+    }
+
+    Write-Warning "正在解压并还原数据，请稍候..."
+    try {
+        if ($selectedFile.EndsWith(".zip")) {
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            [System.IO.Compression.ZipFile]::ExtractToDirectory($selectedFile, $destDir, $true)
+            Write-Success "`n数据解压还原完成！"
+        } else {
+            tar -xzf $selectedFile -C $destDir
+            Write-Success "`n数据解压还原完成！"
+        }
+        Write-Host "  ✔ 目标目录: " -NoNewline; Write-Host "$destDir" -ForegroundColor Green
+    } catch {
+        Write-Error "解压失败: $($_.Exception.Message)"
+    }
+    Press-Any-Key
+}
+
+function Invoke-PCGitHubSyncAndAutoStart {
+    Clear-Host
+    Show-Header
+    Write-Host "  " -NoNewline; Write-Host "从 GitHub 仓库拉取散文件并配置开机/快捷启动" -ForegroundColor Cyan
+    Write-Host "  说明：从你的 GitHub 仓库克隆或更新酒馆，并自动安装 Node 依赖。`n" -ForegroundColor DarkCyan
+
+    $repoInput = Read-Host "  请输入你的 GitHub 仓库地址 (例: yourname/my-sillytavern 或 完整 URL)"
+    if ([string]::IsNullOrWhiteSpace($repoInput)) {
+        Write-Warning "未输入仓库地址，操作已取消。"
+        Press-Any-Key; return
+    }
+
+    $repoUrl = $repoInput
+    if (-not $repoInput.StartsWith("http") -and $repoInput.Contains("/")) {
+        $repoUrl = "https://github.com/${repoInput}.git"
+    }
+
+    $destDir = $ST_Dir
+    Write-Host "`n  请输入本地存放的目标路径："
+    Write-Host "  [直接回车默认使用: " -NoNewline; Write-Host "$destDir" -ForegroundColor Cyan -NoNewline; Write-Host "]"
+    $userDest = Read-Host "  目标路径"
+    if (-not [string]::IsNullOrWhiteSpace($userDest)) {
+        $destDir = $userDest
+    }
+
+    $cloneUrl = $repoUrl
+    if (Read-YesNoPrompt -Label "是否使用国内高速加速镜像拉取 GitHub 仓库？" -DefaultYes $true) {
+        $cloneUrl = "https://ghfast.top/${repoUrl}"
+    }
+
+    Write-Warning "正在检查 Git 与 Node.js 环境..."
+    Ensure-GitInstalled
+    Ensure-NodeInstalled
+
+    if (Test-Path (Join-Path $destDir ".git")) {
+        Write-Host "  检测到目标目录已存在 Git 仓库，正在拉取最新更新..." -ForegroundColor Cyan
+        Push-Location $destDir
+        git pull
+        Pop-Location
+    } else {
+        Write-Host "  正在克隆仓库至 $destDir ..." -ForegroundColor Cyan
+        git clone $cloneUrl $destDir
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "加速镜像克隆失败，尝试官方直连..."
+            git clone $repoUrl $destDir
+        }
+    }
+
+    if (-not (Test-Path $destDir)) {
+        Write-Error "克隆失败，请检查仓库地址与网络连接！"
+        Press-Any-Key; return
+    }
+
+    Write-Host "  正在配置国内 NPM 镜像并校验安装依赖..." -ForegroundColor Cyan
+    Push-Location $destDir
+    npm config set registry https://registry.npmmirror.com
+    npm install --no-audit --no-fund --omit=dev
+    Pop-Location
+
+    Write-Success "`n散文件仓库与运行环境已配置完成！"
+    if (Read-YesNoPrompt -Label "是否现在立即启动酒馆？" -DefaultYes $true) {
+        Push-Location $destDir
+        node server.js
+        Pop-Location
+    }
+    Press-Any-Key
+}
+
+function Show-OneClickBackupMenu {
+    while ($true) {
+        Clear-Host
+        Show-Header
+        Write-Host "      [01] " -NoNewline; Write-Host "PC 全量环境与数据大打包 (含酒馆/Node便携环境/全部文件)" -ForegroundColor Cyan
+        Write-Host "      [02] " -NoNewline; Write-Host "酒馆资产轻量精准打包 (仅含角色卡/对话/配置/扩展/插件)" -ForegroundColor Green
+        Write-Host "      [03] " -NoNewline; Write-Host "解压与恢复备份包 (选择备份包解压至指定路径)" -ForegroundColor Yellow
+        Write-Host "      [04] " -NoNewline; Write-Host "从 GitHub 仓库拉取散文件并配置运行环境" -ForegroundColor "$([char]27)[38;5;222m"
+        Write-Host "      [00] " -NoNewline; Write-Host "返回主菜单`n" -ForegroundColor Cyan
+
+        $choice = Read-MenuPrompt -Allowed "0-4"
+        switch ($choice) {
+            "1" { Invoke-PCFullBackup }
+            "2" { Invoke-PCPrecisionBackup }
+            "3" { Invoke-PCRestoreBackup }
+            "4" { Invoke-PCGitHubSyncAndAutoStart }
+            "0" { return }
+            default { Write-Warning "输入无效，请按提示重试。"; Start-Sleep -Seconds 1 }
+        }
+    }
+}
+
+while ($true) {
+    Clear-Host
+    Show-Header
+    $updateNoticeText = if (Test-Path $UpdateFlagFile) { " [!] 有更新" } else { "" }
+    Write-Host "`n    选择一个操作来开始：`n"
+    Write-Host "      " -NoNewline; Write-MenuCell -Number 1 -Label "启动酒馆" -Color $SoftRose; Write-MenuCell -Number 2 -Label "数据同步" -Color $SoftAqua; Write-MenuCell -Number 3 -Label "本地备份" -Color $SoftGold; Write-Host ""
+    Write-Host "      " -NoNewline; Write-MenuCell -Number 4 -Label "首次部署" -Color $SoftPeach; Write-MenuCell -Number 5 -Label "酒馆版本管理" -Color $SoftLavender; Write-MenuCell -Number 6 -Label "更新咕咕助手$($updateNoticeText)" -Color $SoftMint; Write-Host ""
+    Write-Host "      " -NoNewline; Write-MenuCell -Number 7 -Label "打开酒馆文件夹" -Color $SoftSky; Write-MenuCell -Number 8 -Label "查看帮助文档" -Color $SoftLilac; Write-MenuCell -Number 9 -Label "配置网络代理" -Color $SoftCoral; Write-Host ""
+    Write-Host "      " -NoNewline; Write-MenuCell -Number 10 -Label "实验室" -Color "$([char]27)[38;5;176m"; Write-MenuCell -Number 11 -Label "酒馆配置管理" -Color "$([char]27)[38;5;153m"; Write-MenuCell -Number 12 -Label "咕咕宝箱" -Color "$([char]27)[38;5;121m"; Write-Host ""
+    Write-Host "      " -NoNewline; Write-MenuCell -Number 13 -Label "首次安装Luker" -Color $SoftPeach; Write-MenuCell -Number 14 -Label "酒馆/Luker切换" -Color $SoftAqua; Write-MenuCell -Number 15 -Label "启动Luker" -Color $SoftRose; Write-Host ""
+    Write-Host "      " -NoNewline; Write-MenuCell -Number 16 -Label "一键打包/恢复" -Color $SoftGold; Write-Host "`n"
+    Write-Host ("      " + $SoftPinkRed + "[00] 退出咕咕助手" + $AnsiReset + "`n")
+    $choice = Read-MenuPrompt -Allowed "0-16"
+    switch ($choice) {
+        "1" { Start-SillyTavern }
+        "2" { Show-GitSyncMenu }
+        "3" { Show-BackupMenu }
+        "4" { Install-SillyTavern }
+        "5" { Show-VersionManagementMenu }
+        "6" { Update-AssistantScript }
+        "7" { if (Test-Path $ST_Dir) { Invoke-Item $ST_Dir } else { Write-Warning '目录不存在，请先部署！'; Start-Sleep 1.5 } }
+        "8" { Open-HelpDocs }
+        "9" { Show-ManageProxyMenu }
+        "10" { Show-ExtraFeaturesMenu }
+        "11" { Show-STConfigMenu }
+        "12" { Show-GuguBoxMenu }
+        "13" { Install-Luker }
+        "14" { Switch-STLukerMode }
+        "15" { Start-Luker }
+        "16" { Show-OneClickBackupMenu }
+        "0" { if (Test-Path $UpdateFlagFile) { Remove-Item $UpdateFlagFile -Force }; Write-Host "感谢使用，咕咕助手已退出。"; exit }
+        default { Write-Warning "输入无效，请按提示重试。"; Start-Sleep -Seconds 1.5 }
+    }
+}
+
