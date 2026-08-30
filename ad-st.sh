@@ -3838,16 +3838,25 @@ fn_switch_st_luker_mode() {
         case "$choice" in
             1)
                 fn_print_warning "正在切换回原版酒馆 release 分支..."
+                # 确保 origin 远程存在并拉取 release 引用
+                if ! git remote | grep -q "^origin$"; then
+                    git remote add origin "https://ghfast.top/https://github.com/SillyTavern/SillyTavern.git" 2>/dev/null || true
+                fi
+                git fetch --depth=1 origin release:refs/remotes/origin/release 2>/dev/null || git fetch origin release 2>/dev/null || true
+
                 if git rev-parse --verify refs/remotes/origin/release >/dev/null 2>&1; then
-                    git checkout -B release refs/remotes/origin/release 2>/dev/null || git checkout release 2>/dev/null || git checkout main 2>/dev/null
+                    git checkout -B release refs/remotes/origin/release --force 2>/dev/null || git checkout -B release refs/remotes/origin/release 2>/dev/null
+                elif git rev-parse --verify refs/remotes/origin/main >/dev/null 2>&1; then
+                    git checkout -B release refs/remotes/origin/main --force 2>/dev/null
                 elif ! git switch release 2>/dev/null; then
                     if ! git checkout release 2>/dev/null; then
-                        git checkout main 2>/dev/null || git checkout master 2>/dev/null
+                        git checkout main 2>/dev/null || git checkout master 2>/dev/null || true
                     fi
                 fi
+
                 if fn_read_yes_no_prompt "是否顺便拉取并更新原版酒馆到最新版本" false ""; then
                     fn_print_warning "正在拉取原版酒馆最新代码..."
-                    git pull || fn_print_warning "代码拉取遇到问题，继续尝试安装依赖..."
+                    git pull origin release 2>/dev/null || git pull || fn_print_warning "代码拉取遇到问题，继续尝试安装依赖..."
                 else
                     echo -e "已跳过更新，保持您原有的酒馆版本代码不变。"
                 fi
